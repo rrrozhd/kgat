@@ -9,11 +9,14 @@ sft:
   max_examples: null          # cap for smoke runs
   learning_rate: 2.0e-4
   epochs: 3
-  batch_size: 8
-  grad_accum: 4
+  # Effective batch 32. Per-device batch stays small because the CE loss
+  # materializes batch x seq x vocab logits — with Qwen3's ~151k vocab that is the
+  # T4/L4 memory ceiling, not the weights. Raise batch_size on A100 (bf16, 40GB).
+  batch_size: 2
+  grad_accum: 16
   lora_r: 16
   lora_alpha: 32
   lora_dropout: 0.05
   max_seq_len: 1024
   four_bit: auto              # QLoRA on CUDA+bnb; plain LoRA elsewhere
-  gradient_checkpointing: false
+  gradient_checkpointing: true

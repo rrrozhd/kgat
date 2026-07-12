@@ -78,8 +78,14 @@ def action_logprob(
     Renormalizes each position's logits over exactly the tokens the constraint
     allowed during the rollout, so the optimized distribution is the one that was
     sampled from. Prompt truncation mirrors the controller's (left-side).
+
+    Memory: only the last ``len(target)+1`` positions' logits are materialized
+    (``forward_last_logits``) — full-sequence logits over Qwen3's ~151k vocab are
+    what OOMs a T4.
     """
     import torch
+
+    from kgat.utils.hf import forward_last_logits
 
     trie, _ = build_relation_trie(list(candidates), tokenizer, end_id=tokenizer.eos_token_id)
     target_ids = tokenizer.encode(target_text(target), add_special_tokens=False)
@@ -91,12 +97,13 @@ def action_logprob(
         prompt_ids = prompt_ids[-max_prompt_tokens:]
 
     input_ids = torch.tensor([prompt_ids + target_ids], dtype=torch.long, device=device)
-    logits = model(input_ids=input_ids).logits[0]
+    # keep = |target|+1 tail positions; sliced[j] is the logit row that predicts
+    # target_ids[j] (absolute position len(prompt)-1+j).
+    logits = forward_last_logits(model, input_ids, keep=len(target_ids) + 1)[0]
 
     total = None
-    base = len(prompt_ids) - 1  # logits at position p predict token p+1
     for j, (tok_id, allowed_j) in enumerate(zip(target_ids, allowed, strict=True)):
-        row = logits[base + j].float()
+        row = logits[j].float()
         allowed_idx = torch.tensor(allowed_j, dtype=torch.long, device=device)
         lse = torch.logsumexp(row[allowed_idx], dim=0)
         lp = row[tok_id] - lse
@@ -221,11 +228,16 @@ def run_grpo(cfg: Any) -> Path:
                 continue
 
             # 4-5: policy-gradient step over the batch's rollouts.
+            # The total loss is linear in every step's logprob, so we backward
+            # per STEP: each forward's graph is freed immediately instead of
+            # accumulating across a whole rollout — peak memory is one step's
+            # activations regardless of trajectory length.
             model.train()
             optimizer.zero_grad()
             batch_loss = 0.0
             for rollout in rollouts:
-                lp_sum = None
+                n_steps = len(rollout.steps)
+                scale = 1.0 / (n_steps * len(rollouts))
                 for prompt, candidates, target in rollout.steps:
                     lp = action_logprob(
                         model,
@@ -236,26 +248,21 @@ def run_grpo(cfg: Any) -> Path:
                         device=device,
                         max_prompt_tokens=max_prompt_tokens,
                     )
-                    lp_sum = lp if lp_sum is None else lp_sum + lp
-                lp_mean = lp_sum / len(rollout.steps)
-                loss = -rollout.advantage * lp_mean
-                if can_kl:
-                    with torch.no_grad(), model.disable_adapter():
-                        ref = sum(
-                            action_logprob(
+                    step_loss = -rollout.advantage * lp
+                    if can_kl:
+                        with torch.no_grad(), model.disable_adapter():
+                            ref = action_logprob(
                                 model,
                                 tokenizer,
-                                p,
-                                c,
-                                t,
+                                prompt,
+                                candidates,
+                                target,
                                 device=device,
                                 max_prompt_tokens=max_prompt_tokens,
                             )
-                            for p, c, t in rollout.steps
-                        ) / len(rollout.steps)
-                    loss = loss + kl_coeff * (lp_mean - ref.detach())
-                (loss / len(rollouts)).backward()
-                batch_loss += float(loss.detach())
+                        step_loss = step_loss + kl_coeff * (lp - ref.detach())
+                    (step_loss * scale).backward()
+                    batch_loss += float(step_loss.detach()) / n_steps
 
             torch.nn.utils.clip_grad_norm_(trainable, 1.0)
             optimizer.step()

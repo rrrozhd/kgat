@@ -117,6 +117,7 @@ def run_sft(cfg: Any) -> Path:
             "attention_mask": torch.tensor(attention, dtype=torch.long),
         }
 
+    use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
     args = TrainingArguments(
         output_dir=str(output_dir / "trainer"),
         per_device_train_batch_size=int(sft.batch_size),
@@ -127,7 +128,8 @@ def run_sft(cfg: Any) -> Path:
         save_strategy="no",
         report_to=[],
         seed=int(cfg.seed),
-        bf16=(device == "cuda" and torch.cuda.is_bf16_supported()),
+        bf16=use_bf16,
+        fp16=(device == "cuda" and not use_bf16),  # T4 has no bf16; fp32 would OOM
         remove_unused_columns=False,
         use_cpu=(device == "cpu"),
     )

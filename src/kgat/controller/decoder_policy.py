@@ -110,6 +110,8 @@ class DecoderPolicyController(TraversalController):
         model, device = self._model, self._device_str
         base = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
+        from kgat.utils.hf import forward_last_logits
+
         def logits_fn(generated: tuple[int, ...]):
             if generated:
                 gen = torch.tensor([list(generated)], dtype=torch.long, device=device)
@@ -117,7 +119,7 @@ class DecoderPolicyController(TraversalController):
             else:
                 input_ids = base
             with torch.no_grad():
-                logits = model(input_ids=input_ids).logits[0, -1]
+                logits = forward_last_logits(model, input_ids, keep=1)[0, -1]
             return logits.float().cpu().tolist()
 
         result = constrained_decode(

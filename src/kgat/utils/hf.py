@@ -79,10 +79,12 @@ def load_causal_lm(
     if use_4bit:
         from transformers import BitsAndBytesConfig
 
+        # bf16 compute needs Ampere+ (A100/L4). T4 (sm75) has no bf16 — use fp16 there.
+        compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=True,
         )
         kwargs["device_map"] = {"": 0}
@@ -110,9 +112,33 @@ def load_causal_lm(
 
         model = PeftModel.from_pretrained(model, adapter_path, is_trainable=train_mode)
 
+    needs_input_grads = gradient_checkpointing and train_mode and not use_4bit
+    if needs_input_grads and hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()  # needed for LoRA + checkpointing
+
     if not train_mode:
         model.eval()
     return model, tokenizer, dev
+
+
+def forward_last_logits(model: Any, input_ids: Any, keep: int) -> Any:
+    """Forward pass returning logits for only the last ``keep`` positions.
+
+    Materializing full-sequence logits is THE memory killer for large-vocab models
+    (Qwen3: ~151k vocab -> a [1, 900, 151936] fp32 tensor is ~0.5 GB per forward,
+    and the SFT/GRPO passes would hold several). ``logits_to_keep`` asks the model
+    head to compute only the tail positions; models/wrappers that don't accept the
+    kwarg (or silently ignore it) fall back to slicing, which is always correct.
+
+    Returns logits of shape ``[batch, keep, vocab]``.
+    """
+    try:
+        logits = model(input_ids=input_ids, logits_to_keep=keep).logits
+    except TypeError:  # model doesn't take the kwarg
+        logits = model(input_ids=input_ids).logits
+    if logits.shape[1] > keep:  # kwarg unsupported-but-swallowed, or fallback path
+        logits = logits[:, -keep:, :]
+    return logits
 
 
 # LoRA target modules for the Qwen2/Qwen3 families (and most Llama-style decoders).
@@ -141,4 +167,11 @@ def attach_lora(model: Any, *, r: int, alpha: int, dropout: float) -> Any:
     return get_peft_model(model, config)
 
 
-__all__ = ["require_ml", "pick_device", "load_causal_lm", "attach_lora", "DEFAULT_LORA_TARGETS"]
+__all__ = [
+    "require_ml",
+    "pick_device",
+    "load_causal_lm",
+    "attach_lora",
+    "forward_last_logits",
+    "DEFAULT_LORA_TARGETS",
+]
