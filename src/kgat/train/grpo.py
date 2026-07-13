@@ -288,6 +288,30 @@ def run_grpo(cfg: Any) -> Path:
             if not rollouts:
                 continue
 
+            # KL reference logprobs are CONSTANTS (adapter-disabled base weights):
+            # compute them once per rollout batch, not once per step per inner
+            # update — with updates_per_batch=U this saves (U-1) full ref passes,
+            # and with U=1 it costs the same as before.
+            ref_sums: list[list[float]] | None = None
+            if can_kl:
+                ref_sums = []
+                with torch.no_grad(), model.disable_adapter():
+                    for rollout in rollouts:
+                        ref_sums.append(
+                            [
+                                action_logprob(
+                                    model,
+                                    tokenizer,
+                                    prompt,
+                                    candidates,
+                                    target,
+                                    device=device,
+                                    max_prompt_tokens=max_prompt_tokens,
+                                )[0].item()
+                                for prompt, candidates, target, _ in rollout.steps
+                            ]
+                        )
+
             # 4-6: clipped policy-gradient updates over the batch's rollouts.
             # Backward per STEP so each forward's graph frees immediately — peak
             # memory is one step's activations regardless of trajectory length.
@@ -298,10 +322,10 @@ def run_grpo(cfg: Any) -> Path:
             for _ in range(updates_per_batch):
                 optimizer.zero_grad()
                 batch_loss = 0.0
-                for rollout in rollouts:
+                for ri, rollout in enumerate(rollouts):
                     n_steps = len(rollout.steps)
                     adv = rollout.advantage
-                    for prompt, candidates, target, lp_old_mean in rollout.steps:
+                    for si, (prompt, candidates, target, lp_old_mean) in enumerate(rollout.steps):
                         lp_sum, n_tok = action_logprob(
                             model,
                             tokenizer,
@@ -318,18 +342,8 @@ def run_grpo(cfg: Any) -> Path:
                         surrogate = torch.minimum(ratio * adv, clipped * adv)
                         step_loss = -surrogate
 
-                        if can_kl:
-                            with torch.no_grad(), model.disable_adapter():
-                                ref_sum, _ = action_logprob(
-                                    model,
-                                    tokenizer,
-                                    prompt,
-                                    candidates,
-                                    target,
-                                    device=device,
-                                    max_prompt_tokens=max_prompt_tokens,
-                                )
-                            step_loss = step_loss + kl_coeff * (lp_sum - ref_sum.detach()) / n_tok
+                        if ref_sums is not None:
+                            step_loss = step_loss + kl_coeff * (lp_sum - ref_sums[ri][si]) / n_tok
 
                         if loss_norm == "dr_grpo":
                             # Token-weighted sum over a CONSTANT divisor: no 1/len.

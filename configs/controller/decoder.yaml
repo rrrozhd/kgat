@@ -9,4 +9,5 @@ temperature: 0.0        # 0 = greedy (eval); >0 = sampling (GRPO rollouts)
 device: auto            # auto -> cuda > mps > cpu
 four_bit: auto          # auto -> 4-bit only on CUDA with bitsandbytes
 max_prompt_tokens: 1024
+use_kv_cache: true      # prefill once + 1-token decode steps; false = re-forward per token
 seed: ${seed}

@@ -118,6 +118,17 @@ def run_sft(cfg: Any) -> Path:
         }
 
     use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
+    extra_args: dict[str, Any] = {}
+    if bool(sft.get("group_by_length", True)):
+        # Length-bucketed batches cut padding waste (prompts span ~200-900 tokens).
+        # transformers 5.x removed this TrainingArguments field — pass it only when
+        # the installed version supports it.
+        import dataclasses
+
+        if any(f.name == "group_by_length" for f in dataclasses.fields(TrainingArguments)):
+            extra_args["group_by_length"] = True
+        else:
+            print("SFT: group_by_length unsupported by this transformers version — skipping")
     args = TrainingArguments(
         output_dir=str(output_dir / "trainer"),
         per_device_train_batch_size=int(sft.batch_size),
@@ -132,6 +143,7 @@ def run_sft(cfg: Any) -> Path:
         fp16=(device == "cuda" and not use_bf16),  # T4 has no bf16; fp32 would OOM
         remove_unused_columns=False,
         use_cpu=(device == "cpu"),
+        **extra_args,
     )
     trainer = Trainer(model=model, args=args, train_dataset=encoded, data_collator=collate)
     result = trainer.train()

@@ -43,6 +43,7 @@ class DecoderPolicyController(TraversalController):
         device: str = "auto",
         four_bit: str | bool = "auto",
         max_prompt_tokens: int = 1024,
+        use_kv_cache: bool = True,
         seed: int = 0,
         **kwargs: object,
     ) -> None:
@@ -52,6 +53,7 @@ class DecoderPolicyController(TraversalController):
         self.device = device
         self.four_bit = four_bit
         self.max_prompt_tokens = int(max_prompt_tokens)
+        self.use_kv_cache = bool(use_kv_cache)
         self._rng = random.Random(seed)
         self._model: Any = None
         self._tokenizer: Any = None
@@ -67,6 +69,7 @@ class DecoderPolicyController(TraversalController):
         device: str,
         temperature: float = 0.0,
         max_prompt_tokens: int = 1024,
+        use_kv_cache: bool = True,
         seed: int = 0,
     ) -> DecoderPolicyController:
         """Build a controller around an already-loaded model (used by GRPO)."""
@@ -74,6 +77,7 @@ class DecoderPolicyController(TraversalController):
             model_name="<injected>",
             temperature=temperature,
             max_prompt_tokens=max_prompt_tokens,
+            use_kv_cache=use_kv_cache,
             seed=seed,
         )
         self._model, self._tokenizer, self._device_str = model, tokenizer, device
@@ -108,19 +112,50 @@ class DecoderPolicyController(TraversalController):
         trie, id_map = build_relation_trie(candidates, tok, end_id=tok.eos_token_id)
 
         model, device = self._model, self._device_str
-        base = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
         from kgat.utils.hf import forward_last_logits
 
-        def logits_fn(generated: tuple[int, ...]):
-            if generated:
-                gen = torch.tensor([list(generated)], dtype=torch.long, device=device)
-                input_ids = torch.cat([base, gen], dim=1)
-            else:
-                input_ids = base
+        # KV-cached incremental decoding: prefill the prompt once, then feed one
+        # token per step. constrained_decode grows `generated` monotonically by one
+        # token per call, so the cache never needs invalidation within a decode.
+        # Without this, every generated token re-forwards the whole prompt —
+        # ~(prompt_len/gen_len)x wasted FLOPs, the rollout-phase bottleneck.
+        cache: dict[str, Any] = {"past": None, "n_fed": 0}
+
+        def _stateless(full_ids: list[int]):
+            input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
             with torch.no_grad():
-                logits = forward_last_logits(model, input_ids, keep=1)[0, -1]
-            return logits.float().cpu().tolist()
+                return forward_last_logits(model, input_ids, keep=1)[0, -1]
+
+        def _cached(full_ids: list[int]):
+            new_ids = full_ids[cache["n_fed"] :]
+            input_ids = torch.tensor([new_ids], dtype=torch.long, device=device)
+            kwargs: dict[str, Any] = {"use_cache": True}
+            if cache["past"] is not None:
+                kwargs["past_key_values"] = cache["past"]
+            with torch.no_grad():
+                try:
+                    out = model(input_ids=input_ids, logits_to_keep=1, **kwargs)
+                except TypeError:  # model doesn't accept logits_to_keep
+                    out = model(input_ids=input_ids, **kwargs)
+            past = getattr(out, "past_key_values", None)
+            if past is None:
+                raise RuntimeError("model returned no KV cache")
+            cache["past"] = past
+            cache["n_fed"] = len(full_ids)
+            return out.logits[0, -1]
+
+        def logits_fn(generated: tuple[int, ...]):
+            full_ids = prompt_ids + list(generated)
+            if self.use_kv_cache:
+                try:
+                    return _cached(full_ids).float().cpu().tolist()
+                except (RuntimeError, TypeError, AttributeError, NotImplementedError):
+                    # Cache path unsupported for this model/backend — disable for
+                    # the controller's lifetime and fall back to full re-forwards.
+                    self.use_kv_cache = False
+                    cache["past"], cache["n_fed"] = None, 0
+            return _stateless(full_ids).float().cpu().tolist()
 
         result = constrained_decode(
             logits_fn, trie, id_map, temperature=self.temperature, rng=self._rng

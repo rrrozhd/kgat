@@ -20,3 +20,4 @@ sft:
   max_seq_len: 1024
   four_bit: auto              # QLoRA on CUDA+bnb; plain LoRA elsewhere
   gradient_checkpointing: true
+  group_by_length: true       # length-bucketed batches -> far less padding waste
