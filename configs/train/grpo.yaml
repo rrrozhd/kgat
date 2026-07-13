@@ -22,6 +22,18 @@ grpo:
   kl_coeff: 0.04        # k1 KL estimate vs the adapter-disabled base; 0 disables
   save_every: 50        # updates between adapter checkpoints
 
+  # bias fixes (docs/LIT-REVIEW-2026-07.md; Dr. GRPO defaults, legacy for ablation)
+  loss_norm: dr_grpo    # dr_grpo: token-sum / norm_constant (no 1/len length bias)
+                        # grpo:    legacy mean-per-token, mean-per-step
+  scale_rewards: false  # false: advantage = reward - group mean (no difficulty bias)
+                        # true:  legacy z-scoring by group std
+  norm_constant: 32.0   # dr_grpo divisor (~max steps x max tokens/step); scales the
+                        # effective LR — retune learning_rate if you change it
+  clip_eps_low: 0.2     # PPO clip; asymmetric clip-higher per DAPO
+  clip_eps_high: 0.28
+  updates_per_batch: 1  # >1 reuses rollouts (minibatch epochs); made sound by the
+                        # clipped ratio; keep temperature=1.0 when raising this
+
   # initialization: warm-start from the SFT adapter when present, else fresh LoRA
   init_adapter: outputs/adapters/${model.name}-sft
   output_dir: outputs/adapters/${model.name}-grpo-lam${train.grpo.lam}

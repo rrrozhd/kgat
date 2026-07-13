@@ -6,16 +6,29 @@ environment interactions (hop, observe new frontier, hop again), with ONE reward
 trajectory end. The loop here is the GRPO essence applied to that setting:
 
 1. **Rollouts** — per question, sample ``group_size`` traversals through the real
-   ``TraversalEngine`` with a temperature>0 controller (no grad).
+   ``TraversalEngine`` with a temperature>0 controller (no grad), recording each
+   action's rollout-time logprob.
 2. **Rewards** — ``kgat.train.reward.compute_reward`` on each finished trajectory
    (correctness − λ·normalized cost). λ is the frontier-sweep knob.
-3. **Group advantages** — reward z-scored within each question's group (the
-   group-relative baseline that gives GRPO its name; no critic).
-4. **Policy gradient** — recompute each taken action's log-probability under the
-   *same* trie-masked distribution the rollout sampled from (teacher forcing, grads
-   on), and minimize ``-advantage · mean-token-logprob``.
-5. **KL regularization** (optional) — the k1 estimator ``lp − lp_ref`` on taken
+3. **Group advantages** — reward minus the group mean (Dr. GRPO default;
+   ``scale_rewards=true`` restores legacy z-scoring, which carries the documented
+   difficulty bias: low-variance groups get upweighted).
+4. **Clipped policy gradient** — recompute each taken action's log-probability
+   under the *same* trie-masked distribution the rollout sampled from, form the
+   step-level importance ratio vs the rollout logprob, and apply a PPO-style
+   asymmetric clip (DAPO clip-higher: ``clip_eps_high > clip_eps_low``). With the
+   default single update per rollout batch the ratio is ~1 and this reduces to
+   REINFORCE; it makes ``updates_per_batch > 1`` (minibatch reuse) sound.
+5. **Loss aggregation** — ``loss_norm="dr_grpo"`` (default): token-loss sums over a
+   constant divisor (``norm_constant``), removing the 1/len length bias that made
+   short trajectories get larger per-token gradients. ``loss_norm="grpo"`` keeps
+   the legacy mean-per-token/mean-per-step aggregation for ablation.
+6. **KL regularization** (optional) — the k1 estimator ``lp − lp_ref`` on taken
    actions against the adapter-disabled base model, weighted by ``kl_coeff``.
+
+The bias fixes follow docs/LIT-REVIEW-2026-07.md (Dr. GRPO, COLM 2025; DAPO
+clip-higher per arXiv 2509.24203, scoped to near-on-policy). GSPO-style
+sequence-over-whole-trajectory ratios were reviewed and rejected there.
 
 Status: implemented and unit-consistent with the rollout path (shared trie/prompt
 code), but **not yet validated on a GPU run** — smoke-test on Colab before a real
@@ -28,6 +41,7 @@ CLI::
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,9 +62,15 @@ from kgat.utils.hf import attach_lora, load_causal_lm, require_ml
 
 @dataclass
 class Rollout:
-    """One sampled traversal, reduced to what the gradient pass needs."""
+    """One sampled traversal, reduced to what the gradient pass needs.
 
-    steps: list[tuple[str, tuple[str, ...], str]]  # (prompt, candidates, target)
+    Each step is ``(prompt, candidates, target, lp_old_mean)`` where
+    ``lp_old_mean`` is the rollout policy's mean-per-token logprob of the taken
+    action — the denominator of the importance ratio. It is recovered from
+    ``Action.score`` (the controller records ``exp(mean token logprob)``).
+    """
+
+    steps: list[tuple[str, tuple[str, ...], str, float]]
     reward: float
     advantage: float = 0.0
 
@@ -59,8 +79,30 @@ def trajectory_to_rollout(traj: Trajectory, reward: float) -> Rollout:
     steps = []
     for step in traj.steps:
         target = step.action.relation if step.action.type is ActionType.EXPAND else STOP_TOKEN
-        steps.append((format_prompt(step.state_repr, step.candidates), step.candidates, target))
+        lp_old_mean = math.log(max(step.action.score, 1e-12))
+        steps.append(
+            (format_prompt(step.state_repr, step.candidates), step.candidates, target, lp_old_mean)
+        )
     return Rollout(steps=steps, reward=reward)
+
+
+def compute_advantages(rewards: list[float], *, scale_rewards: bool) -> list[float]:
+    """Group-relative advantages.
+
+    ``scale_rewards=False`` (Dr. GRPO, default): reward minus group mean — every
+    group contributes gradient proportional to its reward spread. ``True`` restores
+    legacy z-scoring, which upweights low-variance (too easy / too hard) groups —
+    the documented GRPO difficulty bias. Pure function; unit-tested without torch.
+    """
+    n = len(rewards)
+    if n == 0:
+        return []
+    mean = sum(rewards) / n
+    centered = [r - mean for r in rewards]
+    if not scale_rewards:
+        return centered
+    std = (sum(c * c for c in centered) / n) ** 0.5
+    return [c / (std + 1e-6) for c in centered]
 
 
 def action_logprob(
@@ -74,6 +116,11 @@ def action_logprob(
     max_prompt_tokens: int,
 ):
     """Trie-masked log-probability of ``target`` given ``prompt`` (grads flow).
+
+    Returns ``(lp_sum, n_tokens)``: the SUM of per-token masked logprobs (a tensor
+    with grad) and the token count. Callers choose the normalization — dividing by
+    ``n_tokens`` here is exactly the Dr. GRPO length bias, so this function no
+    longer takes that decision.
 
     Renormalizes each position's logits over exactly the tokens the constraint
     allowed during the rollout, so the optimized distribution is the one that was
@@ -108,7 +155,7 @@ def action_logprob(
         lse = torch.logsumexp(row[allowed_idx], dim=0)
         lp = row[tok_id] - lse
         total = lp if total is None else total + lp
-    return total / len(target_ids)  # mean-per-token normalization
+    return total, len(target_ids)
 
 
 def run_grpo(cfg: Any) -> Path:
@@ -185,6 +232,20 @@ def run_grpo(cfg: Any) -> Path:
 
     group_size = int(g.group_size)
     batch_q = int(g.get("batch_questions", 4))
+    loss_norm = str(g.get("loss_norm", "dr_grpo"))
+    if loss_norm not in ("dr_grpo", "grpo"):
+        raise ValueError(f"loss_norm must be 'dr_grpo' or 'grpo', got {loss_norm!r}")
+    scale_rewards = bool(g.get("scale_rewards", False))
+    norm_constant = float(g.get("norm_constant", 32.0))  # dr_grpo divisor; interacts with LR
+    clip_lo = float(g.get("clip_eps_low", 0.2))
+    clip_hi = float(g.get("clip_eps_high", 0.28))  # DAPO clip-higher: hi > lo
+    updates_per_batch = int(g.get("updates_per_batch", 1))
+    if float(g.temperature) != 1.0 and updates_per_batch > 1:
+        # Recorded rollout logprobs are temp-1; the IS ratio is only exact at T=1.
+        print(
+            "[grpo] WARNING: temperature != 1.0 with updates_per_batch > 1 — "
+            "importance ratios are approximate; prefer temperature=1.0."
+        )
     updates = 0
 
     for epoch in range(int(g.epochs)):
@@ -215,58 +276,74 @@ def run_grpo(cfg: Any) -> Path:
                             group.append(trajectory_to_rollout(traj, reward))
                     if len(group) < 2:
                         continue
-                    mean = sum(r.reward for r in group) / len(group)
-                    var = sum((r.reward - mean) ** 2 for r in group) / len(group)
-                    std = var**0.5
-                    if std < 1e-6:
-                        continue  # no learning signal in a uniform group
-                    for r in group:
-                        r.advantage = (r.reward - mean) / (std + 1e-6)
+                    advantages = compute_advantages(
+                        [r.reward for r in group], scale_rewards=scale_rewards
+                    )
+                    if max(abs(a) for a in advantages) < 1e-9:
+                        continue  # uniform group — no learning signal
+                    for r, adv in zip(group, advantages, strict=True):
+                        r.advantage = adv
                     rollouts.extend(group)
 
             if not rollouts:
                 continue
 
-            # 4-5: policy-gradient step over the batch's rollouts.
-            # The total loss is linear in every step's logprob, so we backward
-            # per STEP: each forward's graph is freed immediately instead of
-            # accumulating across a whole rollout — peak memory is one step's
-            # activations regardless of trajectory length.
+            # 4-6: clipped policy-gradient updates over the batch's rollouts.
+            # Backward per STEP so each forward's graph frees immediately — peak
+            # memory is one step's activations regardless of trajectory length.
+            # lp_old (rollout policy) stays fixed across the inner updates; the
+            # clipped ratio is what makes updates_per_batch > 1 sound.
             model.train()
-            optimizer.zero_grad()
             batch_loss = 0.0
-            for rollout in rollouts:
-                n_steps = len(rollout.steps)
-                scale = 1.0 / (n_steps * len(rollouts))
-                for prompt, candidates, target in rollout.steps:
-                    lp = action_logprob(
-                        model,
-                        tokenizer,
-                        prompt,
-                        candidates,
-                        target,
-                        device=device,
-                        max_prompt_tokens=max_prompt_tokens,
-                    )
-                    step_loss = -rollout.advantage * lp
-                    if can_kl:
-                        with torch.no_grad(), model.disable_adapter():
-                            ref = action_logprob(
-                                model,
-                                tokenizer,
-                                prompt,
-                                candidates,
-                                target,
-                                device=device,
-                                max_prompt_tokens=max_prompt_tokens,
-                            )
-                        step_loss = step_loss + kl_coeff * (lp - ref.detach())
-                    (step_loss * scale).backward()
-                    batch_loss += float(step_loss.detach()) / n_steps
+            for _ in range(updates_per_batch):
+                optimizer.zero_grad()
+                batch_loss = 0.0
+                for rollout in rollouts:
+                    n_steps = len(rollout.steps)
+                    adv = rollout.advantage
+                    for prompt, candidates, target, lp_old_mean in rollout.steps:
+                        lp_sum, n_tok = action_logprob(
+                            model,
+                            tokenizer,
+                            prompt,
+                            candidates,
+                            target,
+                            device=device,
+                            max_prompt_tokens=max_prompt_tokens,
+                        )
+                        # Step-level importance ratio vs the rollout policy.
+                        lp_old_sum = lp_old_mean * n_tok
+                        ratio = torch.exp(lp_sum - lp_old_sum)
+                        clipped = torch.clamp(ratio, 1.0 - clip_lo, 1.0 + clip_hi)
+                        surrogate = torch.minimum(ratio * adv, clipped * adv)
+                        step_loss = -surrogate
 
-            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
-            optimizer.step()
-            updates += 1
+                        if can_kl:
+                            with torch.no_grad(), model.disable_adapter():
+                                ref_sum, _ = action_logprob(
+                                    model,
+                                    tokenizer,
+                                    prompt,
+                                    candidates,
+                                    target,
+                                    device=device,
+                                    max_prompt_tokens=max_prompt_tokens,
+                                )
+                            step_loss = step_loss + kl_coeff * (lp_sum - ref_sum.detach()) / n_tok
+
+                        if loss_norm == "dr_grpo":
+                            # Token-weighted sum over a CONSTANT divisor: no 1/len.
+                            scale = n_tok / (norm_constant * len(rollouts))
+                        else:  # legacy "grpo": mean per step, mean per trajectory
+                            scale = 1.0 / (n_steps * len(rollouts))
+                        (step_loss * scale).backward()
+                        batch_loss += float(step_loss.detach()) * (
+                            n_tok / norm_constant if loss_norm == "dr_grpo" else 1.0 / n_steps
+                        )
+
+                torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+                optimizer.step()
+                updates += 1
 
             mean_reward = sum(r.reward for r in rollouts) / len(rollouts)
             mean_len = sum(len(r.steps) for r in rollouts) / len(rollouts)
@@ -277,6 +354,7 @@ def run_grpo(cfg: Any) -> Path:
                 "mean_reward": mean_reward,
                 "mean_steps": mean_len,
                 "loss": batch_loss / len(rollouts),
+                "loss_norm": loss_norm,
                 "lam": float(g.lam),
             }
             log.log(record)
@@ -310,4 +388,10 @@ if __name__ == "__main__":
     _main()
 
 
-__all__ = ["run_grpo", "action_logprob", "trajectory_to_rollout", "Rollout"]
+__all__ = [
+    "run_grpo",
+    "action_logprob",
+    "compute_advantages",
+    "trajectory_to_rollout",
+    "Rollout",
+]
