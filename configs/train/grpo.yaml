@@ -3,11 +3,19 @@
 #   python -m kgat.train.grpo -m train.grpo.lam=0.0,0.05,0.1,0.2,0.4 dataset=webqsp
 # Nested under `grpo:` so the override path is train.grpo.lam.
 grpo:
-  # reward (kgat.train.reward)
+  # reward (kgat.train.reward; graph signals per docs/DESIGN-GRAPH-RL.md §A/§B)
   lam: 0.1              # cost-penalty weight (see reward.py for the safe range)
-  cost_cap: 20.0        # cost value mapped to normalized cost 1.0
-  cost_axis: llm_calls
+  cost_mode: regret     # regret: penalize excess over the per-question BFS oracle
+                        # minimum (waste, not need); "absolute" = legacy mode —
+                        # then size cost_cap to the dataset's achievable range or
+                        # lambda gets no leverage (first-sweep null result)
+  cost_axis: hops       # regret compares against oracle min DEPTH -> hops axis
+  cost_cap: 4.0         # regret: EXCESS hops mapped to penalty 1.0
   correctness: f1       # "f1" | "hit"
+
+  # exact potential shaping (train-time distance-to-gold; policy-invariant per Ng'99)
+  shaping: distance     # "none" disables; gives each hop individual credit
+  shaping_scale: 0.15   # per-hop credit unit; keep well under correctness scale
 
   # rollouts
   group_size: 8         # sampled traversals per question (the G in GRPO)

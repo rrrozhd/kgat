@@ -148,6 +148,9 @@ class TrajectoryStep:
     state_repr: str  # serialized controller input (for SFT)
     candidates: tuple[Relation, ...]  # valid relations offered at this step
     action: Action
+    # Frontier node set at decision time — lets training compute exact graph
+    # signals (distance-to-gold shaping) without replaying the engine.
+    frontier_nodes: tuple[Entity, ...] = ()
 
 
 @dataclass
@@ -159,6 +162,7 @@ class Trajectory:
     predicted_answers: tuple[Entity, ...]
     hit: bool
     cost: CostRecord
+    final_frontier: tuple[Entity, ...] = ()  # frontier when traversal ended
 
 
 @dataclass

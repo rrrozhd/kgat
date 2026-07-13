@@ -82,8 +82,21 @@ def compute_reward(
     correctness: str = "f1",
     cost_cap: float = 20.0,
     cost_axis: str = DEFAULT_COST_AXIS,
+    cost_mode: str = "absolute",
+    oracle_cost: float | None = None,
 ) -> float:
     """Cost-penalized reward for a completed traversal.
+
+    Two cost modes (DESIGN-GRAPH-RL.md §A):
+
+    * ``"absolute"`` — penalize the raw cost scalar. Calibration warning: size
+      ``cost_cap`` to the dataset's achievable cost RANGE, or λ gets no leverage
+      (the first FinKG sweep's null result).
+    * ``"regret"`` — penalize only the EXCESS over the per-question oracle
+      minimum (``max(0, cost - oracle_cost)``). A 3-hop question is not punished
+      for needing 3 hops; overshoot is punished everywhere equally. ``cost_cap``
+      then caps the *excess*. Requires ``oracle_cost`` (BFS min depth at train
+      time, same axis as ``cost_axis``).
 
     Args:
         predictions: predicted answer entities.
@@ -91,16 +104,26 @@ def compute_reward(
         cost: the traversal's ``CostRecord`` (or a precomputed scalar cost).
         lam: cost-penalty weight (>= 0). See module docstring for the safe range.
         correctness: "f1" (partial credit) or "hit" (binary).
-        cost_cap: cost value that maps to a normalized cost of 1.0.
+        cost_cap: cost (or excess) value that maps to a normalized penalty of 1.0.
         cost_axis: which ``CostRecord`` axis to penalize (ignored for scalar cost).
+        cost_mode: "absolute" | "regret".
+        oracle_cost: per-question oracle minimum on ``cost_axis`` (regret mode).
 
     Returns:
-        ``correctness_term - lam * normalized_cost``.
+        ``correctness_term - lam * normalized_penalty``.
     """
     if lam < 0:
         raise ValueError(f"lam must be >= 0, got {lam}")
+    if cost_mode not in ("absolute", "regret"):
+        raise ValueError(f"cost_mode must be 'absolute' or 'regret', got {cost_mode!r}")
     corr = correctness_term(predictions, gold, correctness)
-    penalty = lam * normalized_cost(cost, cost_cap=cost_cap, axis=cost_axis)
+    if cost_mode == "regret":
+        if oracle_cost is None:
+            raise ValueError("cost_mode='regret' requires oracle_cost")
+        excess = max(0.0, _cost_scalar(cost, cost_axis) - float(oracle_cost))
+        penalty = lam * normalized_cost(excess, cost_cap=cost_cap, axis=cost_axis)
+    else:
+        penalty = lam * normalized_cost(cost, cost_cap=cost_cap, axis=cost_axis)
     return corr - penalty
 
 

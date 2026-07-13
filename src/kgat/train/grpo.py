@@ -56,6 +56,7 @@ from kgat.controller.constrained_decoding import (
 from kgat.controller.decoder_policy import DecoderPolicyController
 from kgat.controller.prompting import format_prompt
 from kgat.data.schemas import ActionType, Trajectory
+from kgat.train.graph_signals import frontier_min_dist, gold_distance_map, shaping_deltas
 from kgat.train.reward import compute_reward
 from kgat.utils.hf import attach_lora, load_causal_lm, require_ml
 
@@ -64,24 +65,56 @@ from kgat.utils.hf import attach_lora, load_causal_lm, require_ml
 class Rollout:
     """One sampled traversal, reduced to what the gradient pass needs.
 
-    Each step is ``(prompt, candidates, target, lp_old_mean)`` where
+    Each step is ``(prompt, candidates, target, lp_old_mean, shape_adv)``:
     ``lp_old_mean`` is the rollout policy's mean-per-token logprob of the taken
-    action — the denominator of the importance ratio. It is recovered from
-    ``Action.score`` (the controller records ``exp(mean token logprob)``).
+    action (denominator of the importance ratio, recovered from ``Action.score``),
+    and ``shape_adv`` is the exact potential-shaping advantage component for that
+    step (0.0 when shaping is off) — added to the group-relative terminal
+    advantage so different hops of one trajectory finally get different credit.
     """
 
-    steps: list[tuple[str, tuple[str, ...], str, float]]
+    steps: list[tuple[str, tuple[str, ...], str, float, float]]
     reward: float
     advantage: float = 0.0
 
 
-def trajectory_to_rollout(traj: Trajectory, reward: float) -> Rollout:
+def trajectory_to_rollout(
+    traj: Trajectory,
+    reward: float,
+    *,
+    dist_map: dict[str, int] | None = None,
+    shaping_scale: float = 0.0,
+    dist_cap: int = 8,
+) -> Rollout:
+    """Reduce a trajectory for the gradient pass, optionally with exact shaping.
+
+    With a ``dist_map`` (reverse-BFS distance-to-gold, train-time only) each
+    decision's shaping advantage is ``scale * (d_t - d_T)`` — positive for steps
+    that preceded net progress toward a gold, negative for steps at/after the
+    point where the trajectory stalled or killed reachability.
+    """
+    step_dists = []
+    if dist_map is not None and shaping_scale > 0.0:
+        step_dists = [
+            frontier_min_dist(dist_map, s.frontier_nodes, cap=dist_cap) for s in traj.steps
+        ]
+        final_dist = frontier_min_dist(dist_map, traj.final_frontier, cap=dist_cap)
+        shapes = shaping_deltas(step_dists, final_dist, scale=shaping_scale)
+    else:
+        shapes = [0.0] * len(traj.steps)
+
     steps = []
-    for step in traj.steps:
+    for step, shape in zip(traj.steps, shapes, strict=True):
         target = step.action.relation if step.action.type is ActionType.EXPAND else STOP_TOKEN
         lp_old_mean = math.log(max(step.action.score, 1e-12))
         steps.append(
-            (format_prompt(step.state_repr, step.candidates), step.candidates, target, lp_old_mean)
+            (
+                format_prompt(step.state_repr, step.candidates),
+                step.candidates,
+                target,
+                lp_old_mean,
+                shape,
+            )
         )
     return Rollout(steps=steps, reward=reward)
 
@@ -186,6 +219,30 @@ def run_grpo(cfg: Any) -> Path:
     )
     store = InMemoryKGStore.from_records(records)
 
+    # Exact graph signals (train-time only): distance-to-gold map per question,
+    # oracle minimum depth for regret cost, reachability filter. One BFS each.
+    cost_mode = str(g.get("cost_mode", "absolute"))
+    shaping = str(g.get("shaping", "none"))
+    shaping_scale = float(g.get("shaping_scale", 0.15)) if shaping == "distance" else 0.0
+    dist_cap = int(cfg.engine.max_steps) + 1
+    need_signals = cost_mode == "regret" or shaping_scale > 0.0
+    dist_maps: dict[str, dict[str, int]] = {}
+    oracle_depth: dict[str, int] = {}
+    if need_signals:
+        reachable = []
+        for rec in records:
+            dmap = gold_distance_map(rec.triples, rec.question.gold_answers, max_dist=dist_cap)
+            depth = frontier_min_dist(dmap, rec.question.topic_entities, cap=dist_cap)
+            if depth >= dist_cap:  # golds unreachable — only noise for RL
+                continue
+            dist_maps[rec.qid] = dmap
+            oracle_depth[rec.qid] = depth
+            reachable.append(rec)
+        skipped = len(records) - len(reachable)
+        if skipped:
+            print(f"GRPO: skipping {skipped}/{len(records)} questions with unreachable golds")
+        records = reachable
+
     init_adapter = g.get("init_adapter")
     adapter_path = None
     if init_adapter and resolve_path(init_adapter).exists():
@@ -271,9 +328,19 @@ def run_grpo(cfg: Any) -> Path:
                             correctness=str(g.correctness),
                             cost_cap=float(g.cost_cap),
                             cost_axis=str(g.cost_axis),
+                            cost_mode=cost_mode,
+                            oracle_cost=oracle_depth.get(q.qid) if cost_mode == "regret" else None,
                         )
                         if traj.steps:
-                            group.append(trajectory_to_rollout(traj, reward))
+                            group.append(
+                                trajectory_to_rollout(
+                                    traj,
+                                    reward,
+                                    dist_map=dist_maps.get(q.qid),
+                                    shaping_scale=shaping_scale,
+                                    dist_cap=dist_cap,
+                                )
+                            )
                     if len(group) < 2:
                         continue
                     advantages = compute_advantages(
@@ -308,7 +375,7 @@ def run_grpo(cfg: Any) -> Path:
                                     device=device,
                                     max_prompt_tokens=max_prompt_tokens,
                                 )[0].item()
-                                for prompt, candidates, target, _ in rollout.steps
+                                for prompt, candidates, target, *_ in rollout.steps
                             ]
                         )
 
@@ -324,8 +391,13 @@ def run_grpo(cfg: Any) -> Path:
                 batch_loss = 0.0
                 for ri, rollout in enumerate(rollouts):
                     n_steps = len(rollout.steps)
-                    adv = rollout.advantage
-                    for si, (prompt, candidates, target, lp_old_mean) in enumerate(rollout.steps):
+                    for si, (prompt, candidates, target, lp_old_mean, shape_adv) in enumerate(
+                        rollout.steps
+                    ):
+                        # Per-step advantage: group-relative terminal advantage
+                        # plus the exact shaping component (0 when shaping off) —
+                        # hops within one trajectory get individual credit.
+                        adv = rollout.advantage + shape_adv
                         lp_sum, n_tok = action_logprob(
                             model,
                             tokenizer,

@@ -147,6 +147,7 @@ class TraversalEngine:
                     state_repr=serialize_state(state),
                     candidates=tuple(candidates),
                     action=action,
+                    frontier_nodes=tuple(state.frontier_nodes),
                 )
             )
 
@@ -175,6 +176,7 @@ class TraversalEngine:
             predicted_answers=predicted,
             hit=hit,
             cost=cost,
+            final_frontier=tuple(state.frontier_nodes),
         )
         certificate = audit.build(cost)
         return TraversalResult(trajectory=trajectory, certificate=certificate)
