@@ -57,8 +57,13 @@ REVERSE_EDGE: dict[Relation, Relation] = {
     "has_investor": "invested_in",
     "in_sector": "sector_contains",
     "sector_contains": "in_sector",
+    # People edges — alphina's people_sync projects (:Person)-[:OFFICER_OF|DIRECTOR_OF]->
+    # (:Company) with reverses HAS_OFFICER|HAS_DIRECTOR. Directors on multiple boards
+    # create the interlock paths alphina's people-centrality PageRank scores.
     "officer_of": "has_officer",
     "has_officer": "officer_of",
+    "director_of": "has_director",
+    "has_director": "director_of",
     "insider_bought": "bought_by_insider",
     "bought_by_insider": "insider_bought",
 }
@@ -80,6 +85,8 @@ _NOUN: dict[Relation, str] = {
     "sector_contains": "companies in the sector",
     "officer_of": "companies led by",
     "has_officer": "executives",
+    "director_of": "companies with board seats held by",
+    "has_director": "board members",
     "insider_bought": "companies with insider purchases by",
     "bought_by_insider": "insider buyers",
 }
@@ -129,10 +136,13 @@ def _company_name(rng: random.Random, taken: set[str]) -> str:
 def build_synthetic_kg(n_companies: int = 120, seed: int = 42, edges_per_company: int = 5) -> FinKG:
     """Deterministic synthetic financial KG in alphina's relation vocabulary.
 
-    Structure sketch: every company gets a sector and 1-2 officers; company-company
-    edges are sampled over the seven filer-centric types; a subset of officers have
-    Form-4-style insider purchases. Names are synthetic — this KG is for pipeline
-    development, not facts.
+    Structure sketch: every company gets a sector; company-company edges are sampled
+    over the seven filer-centric types; people hold 1-3 officer/director roles at
+    DIFFERENT companies (mirroring alphina's Person->OFFICER_OF|DIRECTOR_OF model),
+    so interlocking-directorate paths exist — "board members of X" -> "their other
+    boards" is a real 2-hop, the pattern alphina's people-centrality scores. A
+    subset of role-holders have Form-4-style insider purchases at their companies.
+    Names are synthetic — this KG is for pipeline development, not facts.
     """
     rng = random.Random(seed)
     kg = FinKG()
@@ -140,13 +150,19 @@ def build_synthetic_kg(n_companies: int = 120, seed: int = 42, edges_per_company
 
     kg.sectors = [f"sector:{s}" for s in _SECTORS]
     kg.companies = [_company_name(rng, taken) for _ in range(n_companies)]
-    for i, company in enumerate(kg.companies):
+    for company in kg.companies:
         kg.add_pair(company, "in_sector", rng.choice(kg.sectors))
-        for k in range(1 + rng.randrange(2)):
-            person = f"{rng.choice(('A.', 'J.', 'M.', 'R.', 'S.'))} {company.split()[0]}{i}-{k}"
-            kg.people.append(person)
-            kg.add_pair(person, "officer_of", company)
-            if rng.random() < 0.4:  # Form-4-style open-market purchase
+
+    n_people = max(2, int(n_companies * 1.2))
+    for i in range(n_people):
+        person = f"{rng.choice(('A.', 'J.', 'M.', 'R.', 'S.'))} {rng.choice(_NAME_B).title()}{i}"
+        kg.people.append(person)
+        n_roles = 1 + rng.randrange(3)  # 1-3 roles; >1 creates board interlocks
+        seats = rng.sample(kg.companies, min(n_roles, len(kg.companies)))
+        for j, company in enumerate(seats):
+            role = "officer_of" if j == 0 and rng.random() < 0.6 else "director_of"
+            kg.add_pair(person, role, company)
+            if rng.random() < 0.25:  # Form-4-style open-market purchase
                 kg.add_pair(person, "insider_bought", company)
 
     company_edge_types = (
@@ -209,9 +225,9 @@ def load_triples_jsonl(path: str | Path) -> FinKG:
             companies.add(t.head), sectors.add(t.tail)
         elif t.relation == "sector_contains":
             sectors.add(t.head), companies.add(t.tail)
-        elif t.relation in ("officer_of", "insider_bought"):
+        elif t.relation in ("officer_of", "director_of", "insider_bought"):
             people.add(t.head), companies.add(t.tail)
-        elif t.relation in ("has_officer", "bought_by_insider"):
+        elif t.relation in ("has_officer", "has_director", "bought_by_insider"):
             companies.add(t.head), people.add(t.tail)
         else:
             companies.add(t.head), companies.add(t.tail)

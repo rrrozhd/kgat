@@ -62,6 +62,26 @@ def test_verbalize_composes_right_to_left():
     assert q == "who are the suppliers of competitors of Vextra Systems?"
 
 
+def test_board_interlocks_exist():
+    # People hold roles at multiple companies (alphina's Person model), so the
+    # interlocking-directorate 2-hop — has_director -> director_of landing on a
+    # DIFFERENT company — must be reachable in the synthetic KG.
+    kg = build_synthetic_kg(n_companies=60, seed=7)
+    adj: dict = {}
+    for t in kg.triples:
+        adj.setdefault(t.head, {}).setdefault(t.relation, []).append(t.tail)
+    interlocked = 0
+    for company in kg.companies:
+        others = follow_sequence(adj, company, ("has_director", "director_of")) - {company}
+        interlocked += bool(others)
+    assert interlocked >= 5  # plenty of interlock structure to sample questions from
+
+
+def test_interlock_question_verbalizes():
+    q = verbalize("Vextra Systems", ("has_director", "director_of"))
+    assert q == ("who are the companies with board seats held by board members of Vextra Systems?")
+
+
 def test_records_parse_and_mine_end_to_end(tmp_path):
     kg = build_synthetic_kg(n_companies=80, seed=11)
     questions = generate_questions(kg, 60, seed=11)
