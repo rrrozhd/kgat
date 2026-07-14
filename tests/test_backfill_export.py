@@ -14,6 +14,7 @@ from kgat.data.backfill_export import (
     generate_synthetic_pairs,
     load_export_jsonl,
     read_pairs_jsonl,
+    split_by_company,
     split_by_filing,
     target_vocabulary,
     write_pairs_jsonl,
@@ -87,6 +88,77 @@ def test_read_pairs_empty_raises(tmp_path):
     empty.write_text("")
     with pytest.raises(ValueError):
         read_pairs_jsonl(empty)
+
+
+def test_split_by_company_groups_filings_of_one_company(tmp_path):
+    # Two filings of the same company (successive 10-Ks) must land in ONE split.
+    pairs = [
+        ExtractionPair(text=f"t{i}", filer="A Corp", triples=(), filing=f"acc-{i}", company="co-1")
+        for i in range(4)
+    ] + [
+        ExtractionPair(text=f"u{i}", filer=f"B{i}", triples=(), filing=f"bcc-{i}", company=f"co-{i+2}")
+        for i in range(8)
+    ]
+    splits = split_by_company(pairs, fractions=(0.5, 0.25, 0.25), seed=0)
+    homes = {s for s, items in splits.items() if any(p.company == "co-1" for p in items)}
+    assert len(homes) == 1  # never straddles splits
+    assert sum(len(v) for v in splits.values()) == len(pairs)
+
+
+def test_load_export_v2_groups_by_chunk_and_uses_chunk_text(tmp_path):
+    rows = [
+        # two edges in ONE chunk -> one pair whose text is the full chunk
+        {
+            "evidence_text": "We sell to A.",
+            "filer": "Filer Co",
+            "relationship_type": "supplier",
+            "target": "A",
+            "confidence": 0.9,
+            "accession_number": "acc-1",
+            "chunk_id": "ch-1",
+            "chunk_text": "Long chunk. We sell to A. We compete with B. Boilerplate.",
+            "item_key": "Item 1",
+            "company_id": "co-9",
+        },
+        {
+            "evidence_text": "We compete with B.",
+            "filer": "Filer Co",
+            "relationship_type": "competitor",
+            "target": "B",
+            "confidence": 0.8,
+            "accession_number": "acc-1",
+            "chunk_id": "ch-1",
+            "chunk_text": "Long chunk. We sell to A. We compete with B. Boilerplate.",
+            "item_key": "Item 1",
+            "company_id": "co-9",
+        },
+        # negative chunk: NULL evidence, text from chunk_text
+        {
+            "evidence_text": None,
+            "filer": "Filer Co",
+            "relationship_type": None,
+            "target": None,
+            "confidence": None,
+            "accession_number": "acc-1",
+            "chunk_id": "ch-2",
+            "chunk_text": "Pure boilerplate chunk.",
+            "item_key": "Item 7",
+            "company_id": "co-9",
+        },
+    ]
+    path = tmp_path / "export_v2.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    pairs = load_export_jsonl(path)
+    assert len(pairs) == 2
+    multi = next(p for p in pairs if p.triples)
+    assert multi.text.startswith("Long chunk.")
+    assert set(multi.triples) == {("supplier", "A"), ("competitor", "B")}
+    assert multi.company == "co-9" and multi.item_key == "Item 1"
+    negative = next(p for p in pairs if not p.triples)
+    assert negative.text == "Pure boilerplate chunk." and negative.item_key == "Item 7"
+    # roundtrip keeps the new fields
+    write_pairs_jsonl(pairs, tmp_path / "pairs.jsonl")
+    assert read_pairs_jsonl(tmp_path / "pairs.jsonl") == pairs
 
 
 def test_load_export_groups_rows_by_evidence(tmp_path):

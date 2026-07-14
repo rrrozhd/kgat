@@ -8,27 +8,40 @@ synthetic dataset from FinKG triples so the whole pilot runs offline end-to-end.
 
 Export contract (read-only against alphina PG; column names verified against
 ``market_analysis/src/alphina/models/filing.py`` 2026-07-14). Positives — one row
-per extracted edge::
+per extracted edge, joined to its CHUNK so training sees deployment-shaped input
+(full chunk text, not the teacher's chosen quote)::
 
     SELECT cr.evidence_text,
            cr.source_company_name AS filer,
            cr.relationship_type,
            cr.target_company_name AS target,
            cr.confidence,
-           pf.accession_number
+           pf.accession_number,
+           cr.chunk_id,
+           fc.text AS chunk_text,
+           fc.item_key,
+           pf.company_id
     FROM company_relationships cr
     JOIN processed_filings pf ON cr.filing_id = pf.id
-    WHERE cr.confidence >= 0.7;          -- teacher-quality floor; tune
+    JOIN filing_chunks fc ON cr.chunk_id = fc.id
+    WHERE cr.confidence >= 0.7           -- teacher-quality floor; tune
+      AND cr.relationship_type IN        -- DB has legacy types (e.g. 'holds');
+          ('supplier','customer','competitor','partner',
+           'acquirer','subsidiary','investor');
 
 Negatives — chunks from the same filings with no extracted edges (the skip class;
-``relationship_type``/``target`` NULL)::
+``relationship_type``/``target``/``evidence_text`` NULL)::
 
-    SELECT fc.text AS evidence_text,
+    SELECT NULL AS evidence_text,
            c.name AS filer,
            NULL AS relationship_type,
            NULL AS target,
            NULL AS confidence,
-           pf.accession_number
+           pf.accession_number,
+           fc.id AS chunk_id,
+           fc.text AS chunk_text,
+           fc.item_key,
+           pf.company_id
     FROM filing_chunks fc
     JOIN processed_filings pf ON fc.filing_id = pf.id
     JOIN companies c ON pf.company_id = c.id
@@ -36,10 +49,13 @@ Negatives — chunks from the same filings with no extracted edges (the skip cla
     WHERE cr.id IS NULL;
 
 Both exported as JSONL (one row-object per line, keys as selected above) into a
-single file or several; ``load_export_jsonl`` accepts either. Rows sharing
-(accession_number, evidence_text) merge into one multi-triple example. Splits are
-by FILING (accession number), never by pair — same-filing evidence in train and
-test would leak near-duplicate text.
+single file or several; ``load_export_jsonl`` accepts either, including the v1
+format without the chunk columns (it then falls back to evidence_text as the
+example text and evidence-level grouping). Rows sharing (accession_number,
+chunk_id) merge into one multi-triple example. Splits are by COMPANY when
+``company_id`` is exported (a company's 10-Ks repeat near-identical boilerplate
+year over year — filing-level splits still leak), by filing otherwise; never by
+pair.
 
 CLI (synthetic pilot data)::
 
@@ -91,8 +107,10 @@ class ExtractionPair:
     """One (chunk text -> triples) training/eval example.
 
     ``triples`` is filer-centric ``(relationship_type, target_name)`` items; empty
-    means the skip class (the grammar's NONE). ``filing`` is the leakage-split unit
-    (accession number, or a synthetic stand-in).
+    means the skip class (the grammar's NONE). ``filing`` is the accession number
+    (or a synthetic stand-in); ``company`` is the leakage-split unit when present
+    (a company's filings repeat boilerplate year over year); ``item_key`` is the
+    filing section the chunk came from (analysis only, not in the prompt).
     """
 
     text: str
@@ -100,6 +118,8 @@ class ExtractionPair:
     triples: tuple[tuple[str, str], ...]
     filing: str
     confidence: float | None = None
+    company: str | None = None
+    item_key: str | None = None
 
     def to_record(self) -> dict:
         return {
@@ -108,6 +128,8 @@ class ExtractionPair:
             "triples": [list(t) for t in self.triples],
             "filing": self.filing,
             "confidence": self.confidence,
+            "company": self.company,
+            "item_key": self.item_key,
         }
 
 
@@ -115,9 +137,12 @@ def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
     """Load an alphina export (docstring SQL) into grouped ``ExtractionPair``s.
 
     Rows with NULL/absent ``relationship_type`` are negatives. Rows sharing
-    (accession_number, evidence_text) merge into one multi-triple pair; a pair's
-    confidence is the MIN over its rows (weakest teacher edge bounds the example).
-    Raises ``ValueError`` on relationship types outside the seven-type taxonomy.
+    (accession_number, chunk_id) — or (accession_number, evidence_text) for v1
+    exports without chunk columns — merge into one multi-triple pair; the pair's
+    text is the full ``chunk_text`` when exported (deployment-shaped input),
+    falling back to ``evidence_text``; its confidence is the MIN over its rows
+    (weakest teacher edge bounds the example). Raises ``ValueError`` on
+    relationship types outside the seven-type taxonomy.
     """
     grouped: dict[tuple[str, str], dict] = {}
     with Path(path).open("r", encoding="utf-8") as fh:
@@ -126,18 +151,28 @@ def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
             if not line:
                 continue
             row = json.loads(line)
-            text = str(row["evidence_text"])
+            chunk_text = row.get("chunk_text")
+            text = str(chunk_text if chunk_text is not None else row["evidence_text"])
             filer = str(row["filer"])
             filing = str(row["accession_number"])
             rel = row.get("relationship_type")
-            key = (filing, text)
+            chunk_id = row.get("chunk_id")
+            key = (filing, str(chunk_id) if chunk_id is not None else text)
             entry = grouped.setdefault(
-                key, {"filer": filer, "triples": [], "confidence": None}
+                key,
+                {
+                    "text": text,
+                    "filer": filer,
+                    "triples": [],
+                    "confidence": None,
+                    "company": row.get("company_id"),
+                    "item_key": row.get("item_key"),
+                },
             )
             if entry["filer"] != filer:
                 raise ValueError(
                     f"line {line_no}: filer {filer!r} != {entry['filer']!r} "
-                    f"for the same (filing, evidence_text) group"
+                    f"for the same (filing, chunk) group"
                 )
             if rel is None:
                 continue  # negative row: contributes the group, no triple
@@ -157,14 +192,38 @@ def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
                 )
     return [
         ExtractionPair(
-            text=text,
+            text=e["text"],
             filer=e["filer"],
             triples=tuple(e["triples"]),
             filing=filing,
             confidence=e["confidence"],
+            company=str(e["company"]) if e["company"] is not None else None,
+            item_key=e["item_key"],
         )
-        for (filing, text), e in grouped.items()
+        for (filing, _), e in grouped.items()
     ]
+
+
+def _split_by_unit(
+    pairs: list[ExtractionPair],
+    unit_of,
+    *,
+    fractions: tuple[float, float, float],
+    seed: int,
+) -> dict[str, list[ExtractionPair]]:
+    units = sorted({unit_of(p) for p in pairs})
+    random.Random(seed).shuffle(units)
+    n = len(units)
+    n_train = int(n * fractions[0])
+    n_dev = int(n * fractions[1])
+    assignment: dict[str, str] = {}
+    for i, unit in enumerate(units):
+        split = "train" if i < n_train else ("dev" if i < n_train + n_dev else "test")
+        assignment[unit] = split
+    out: dict[str, list[ExtractionPair]] = {"train": [], "dev": [], "test": []}
+    for p in pairs:
+        out[assignment[unit_of(p)]].append(p)
+    return out
 
 
 def split_by_filing(
@@ -173,24 +232,30 @@ def split_by_filing(
     fractions: tuple[float, float, float] = (0.8, 0.1, 0.1),
     seed: int = 42,
 ) -> dict[str, list[ExtractionPair]]:
-    """Filing-disjoint train/dev/test split (the leakage guard).
+    """Filing-disjoint train/dev/test split.
 
     Filings are shuffled deterministically and allocated by filing count; every
     pair of one filing lands in exactly one split.
     """
-    filings = sorted({p.filing for p in pairs})
-    random.Random(seed).shuffle(filings)
-    n = len(filings)
-    n_train = int(n * fractions[0])
-    n_dev = int(n * fractions[1])
-    assignment: dict[str, str] = {}
-    for i, filing in enumerate(filings):
-        split = "train" if i < n_train else ("dev" if i < n_train + n_dev else "test")
-        assignment[filing] = split
-    out: dict[str, list[ExtractionPair]] = {"train": [], "dev": [], "test": []}
-    for p in pairs:
-        out[assignment[p.filing]].append(p)
-    return out
+    return _split_by_unit(pairs, lambda p: p.filing, fractions=fractions, seed=seed)
+
+
+def split_by_company(
+    pairs: list[ExtractionPair],
+    *,
+    fractions: tuple[float, float, float] = (0.8, 0.1, 0.1),
+    seed: int = 42,
+) -> dict[str, list[ExtractionPair]]:
+    """Company-disjoint split — the stricter leakage guard.
+
+    A company's successive 10-Ks repeat near-identical boilerplate, so
+    filing-disjoint splits still leak across years; splitting on the company
+    closes that. Pairs without a ``company`` fall back to their filing as the
+    unit (v1 exports, synthetic data).
+    """
+    return _split_by_unit(
+        pairs, lambda p: p.company or p.filing, fractions=fractions, seed=seed
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +380,7 @@ def generate_synthetic_pairs(
                     triples=chunk_triples,
                     filing=filing,
                     confidence=round(rng.uniform(0.7, 0.99), 3),
+                    company=filer,
                 )
             )
         for _ in range(negatives_per_filing):
@@ -324,6 +390,7 @@ def generate_synthetic_pairs(
                     filer=filer,
                     triples=(),
                     filing=filing,
+                    company=filer,
                 )
             )
     return pairs
@@ -357,6 +424,8 @@ def read_pairs_jsonl(path: str | Path, max_examples: int | None = None) -> list[
                     triples=tuple((str(r), str(t)) for r, t in row["triples"]),
                     filing=row["filing"],
                     confidence=row.get("confidence"),
+                    company=row.get("company"),
+                    item_key=row.get("item_key"),
                 )
             )
             if max_examples is not None and len(pairs) >= max_examples:
@@ -383,11 +452,19 @@ def export_dataset(
     *,
     fractions: tuple[float, float, float] = (0.8, 0.1, 0.1),
     seed: int = 42,
+    split_on: str = "auto",
 ) -> dict[str, int]:
-    """Write filing-disjoint train/dev/test JSONLs + ``vocab.json``. Returns counts."""
+    """Write leakage-guarded train/dev/test JSONLs + ``vocab.json``. Returns counts.
+
+    ``split_on``: ``company`` | ``filing`` | ``auto`` (company whenever any pair
+    carries a company id, else filing).
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    splits = split_by_filing(pairs, fractions=fractions, seed=seed)
+    if split_on == "auto":
+        split_on = "company" if any(p.company for p in pairs) else "filing"
+    splitter = {"company": split_by_company, "filing": split_by_filing}[split_on]
+    splits = splitter(pairs, fractions=fractions, seed=seed)
     counts: dict[str, int] = {}
     for split, items in splits.items():
         write_pairs_jsonl(items, out_dir / f"{split}.jsonl")
@@ -408,6 +485,7 @@ def main() -> None:
     parser.add_argument("--filings", type=int, default=150, help="synthetic filings (companies)")
     parser.add_argument("--negatives-per-filing", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--split-on", default="auto", choices=["auto", "company", "filing"])
     args = parser.parse_args()
 
     if args.export:
@@ -421,10 +499,12 @@ def main() -> None:
 
     n_pos = sum(1 for p in pairs if p.triples)
     n_multi = sum(1 for p in pairs if len(p.triples) > 1)
-    counts = export_dataset(pairs, args.out, seed=args.seed)
+    counts = export_dataset(pairs, args.out, seed=args.seed, split_on=args.split_on)
+    n_companies = len({p.company or p.filing for p in pairs})
     print(
         f"{len(pairs)} pairs from {source}: {n_pos} positive ({n_multi} multi-triple), "
-        f"{len(pairs) - n_pos} negative; {len({p.filing for p in pairs})} filings"
+        f"{len(pairs) - n_pos} negative; {len({p.filing for p in pairs})} filings, "
+        f"{n_companies} companies"
     )
     print(f"wrote {counts} + vocab.json -> {args.out}")
 
@@ -439,6 +519,7 @@ __all__ = [
     "ExtractionPair",
     "load_export_jsonl",
     "split_by_filing",
+    "split_by_company",
     "generate_synthetic_pairs",
     "write_pairs_jsonl",
     "read_pairs_jsonl",
