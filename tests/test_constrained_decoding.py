@@ -63,8 +63,9 @@ def test_greedy_decode_masks_out_invalid_tokens():
 
     # 'x' has a huge logit everywhere but is never a valid continuation; among the
     # valid ones, prefer 'a' then 'c' => decode "ac".
-    def logits_fn(generated):
-        return _logits({ord("x"): 100.0, A: 2.0, Z: 1.0, C: 3.0, B: 1.0, END: 0.5})
+    def logits_fn(generated, allowed):
+        row = _logits({ord("x"): 100.0, A: 2.0, Z: 1.0, C: 3.0, B: 1.0, END: 0.5})
+        return [row[t] for t in allowed]
 
     result = constrained_decode(logits_fn, trie, id_map)
     assert result.candidate == "ac"
@@ -74,8 +75,9 @@ def test_greedy_decode_masks_out_invalid_tokens():
 def test_greedy_logprob_matches_manual_softmax():
     trie, id_map = build_relation_trie(["a", "z"], TOK, end_id=END, include_stop=False)
 
-    def logits_fn(generated):
-        return _logits({A: 1.0, Z: 0.0})
+    def logits_fn(generated, allowed):
+        row = _logits({A: 1.0, Z: 0.0})
+        return [row[t] for t in allowed]
 
     result = constrained_decode(logits_fn, trie, id_map)
     assert result.candidate == "a"
@@ -88,8 +90,9 @@ def test_sampling_stays_inside_the_candidate_set():
     trie, id_map = build_relation_trie(["ab", "ac", "zz"], TOK, end_id=END)
     valid = {"ab", "ac", "zz", STOP_TOKEN}
 
-    def logits_fn(generated):
-        return _logits({ord("x"): 50.0})  # uniform over valid; huge invalid lure
+    def logits_fn(generated, allowed):
+        row = _logits({ord("x"): 50.0})  # huge invalid lure, never requested
+        return [row[t] for t in allowed]
 
     rng = random.Random(7)
     seen = set()

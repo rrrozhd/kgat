@@ -118,16 +118,15 @@ class DecodeResult:
     logprob: float  # sum of temp-1 mask-renormalized token logprobs
 
 
-def _masked_logprobs(logits: Sequence[float], allowed: list[int]) -> dict[int, float]:
-    """Log-softmax of ``logits`` restricted to ``allowed`` token ids (temp 1)."""
-    vals = [float(logits[t]) for t in allowed]
+def _logsoftmax(vals: Sequence[float]) -> list[float]:
+    """Log-softmax of a small score vector (temp 1)."""
     m = max(vals)
     log_z = m + math.log(sum(math.exp(v - m) for v in vals))
-    return {t: v - log_z for t, v in zip(allowed, vals, strict=True)}
+    return [v - log_z for v in vals]
 
 
 def constrained_decode(
-    logits_fn: Callable[[tuple[int, ...]], Sequence[float]],
+    logits_fn: Callable[[tuple[int, ...], list[int]], Sequence[float]],
     trie: TokenTrie,
     id_map: dict[tuple[int, ...], str],
     *,
@@ -136,8 +135,14 @@ def constrained_decode(
 ) -> DecodeResult:
     """Decode exactly one candidate under the trie constraint.
 
-    ``logits_fn`` maps the ids generated so far to full-vocabulary next-token
-    logits. ``temperature=0`` decodes greedily; ``temperature>0`` samples from the
+    ``logits_fn(generated_ids, allowed_ids)`` returns the scores for exactly the
+    ``allowed_ids`` continuations (aligned, ``len == len(allowed_ids)``). Passing
+    the allowed set INTO the scorer is the load-bearing structured-decoding
+    contract: a GPU backend gathers just those entries on-device instead of
+    materializing the full vocabulary per token (with a ~151k vocab that transfer
+    plus the Python list conversion dominated per-token latency at batch 1).
+
+    ``temperature=0`` decodes greedily; ``temperature>0`` samples from the
     temperature-scaled masked distribution (``rng`` for determinism). The returned
     ``logprob`` is always the temperature-1 masked logprob of the chosen path.
     """
@@ -147,24 +152,25 @@ def constrained_decode(
 
     while not node.is_leaf:
         allowed = node.allowed()
-        logits = logits_fn(generated)
-        lp = _masked_logprobs(logits, allowed)
+        vals = list(logits_fn(generated, allowed))
+        lp = _logsoftmax(vals)
 
         if len(allowed) == 1:
-            choice = allowed[0]
+            idx = 0
         elif temperature <= 0.0:
-            choice = max(allowed, key=lambda t: lp[t])
+            idx = max(range(len(allowed)), key=lambda i: lp[i])
         else:
-            scaled = _masked_logprobs([v / temperature for v in logits], allowed)
+            scaled = _logsoftmax([v / temperature for v in vals])
             r = (rng or random).random()
-            acc, choice = 0.0, allowed[-1]
-            for tok in allowed:
-                acc += math.exp(scaled[tok])
+            acc, idx = 0.0, len(allowed) - 1
+            for i in range(len(allowed)):
+                acc += math.exp(scaled[i])
                 if r <= acc:
-                    choice = tok
+                    idx = i
                     break
 
-        total_logprob += lp[choice]
+        total_logprob += lp[idx]
+        choice = allowed[idx]
         generated = (*generated, choice)
         node = node.step(choice)
 

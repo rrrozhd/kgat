@@ -145,17 +145,23 @@ class DecoderPolicyController(TraversalController):
             cache["n_fed"] = len(full_ids)
             return out.logits[0, -1]
 
-        def logits_fn(generated: tuple[int, ...]):
+        def logits_fn(generated: tuple[int, ...], allowed: list[int]):
             full_ids = prompt_ids + list(generated)
             if self.use_kv_cache:
                 try:
-                    return _cached(full_ids).float().cpu().tolist()
+                    row = _cached(full_ids)
                 except (RuntimeError, TypeError, AttributeError, NotImplementedError):
                     # Cache path unsupported for this model/backend — disable for
                     # the controller's lifetime and fall back to full re-forwards.
                     self.use_kv_cache = False
                     cache["past"], cache["n_fed"] = None, 0
-            return _stateless(full_ids).float().cpu().tolist()
+                    row = _stateless(full_ids)
+            else:
+                row = _stateless(full_ids)
+            # Structured-decoding contract: gather ONLY the allowed continuations
+            # on-device; never materialize the ~151k-vocab row on the CPU.
+            idx = torch.tensor(allowed, dtype=torch.long, device=row.device)
+            return row.index_select(0, idx).float().cpu().tolist()
 
         result = constrained_decode(
             logits_fn, trie, id_map, temperature=self.temperature, rng=self._rng
