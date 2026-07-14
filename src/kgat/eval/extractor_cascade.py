@@ -193,6 +193,13 @@ def main() -> None:
     parser.add_argument("--max-triples", type=int, default=8)
     parser.add_argument("--max-prompt-tokens", type=int, default=1024)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--four-bit",
+        default="false",
+        choices=["auto", "true", "false"],
+        help="4-bit base for the eval; default fp16 (4-bit eval jitter masked real "
+        "effects in the GRPO sweep v1 — see STATUS.md)",
+    )
     parser.add_argument("--min-recall", type=float, default=0.8, help="success-gate recall floor")
     parser.add_argument(
         "--taus", default=None, help="comma-separated thresholds (default 0.00..1.05 step 0.05)"
@@ -205,8 +212,9 @@ def main() -> None:
     pairs = read_pairs_jsonl(data_dir / f"{args.split}.jsonl", max_examples=args.max_examples)
     vocab = json.loads((data_dir / "vocab.json").read_text(encoding="utf-8"))
 
+    four_bit = {"auto": "auto", "true": True, "false": False}[args.four_bit]
     model, tokenizer, device = load_causal_lm(
-        args.model_id, adapter_path=args.adapter, device=args.device
+        args.model_id, adapter_path=args.adapter, device=args.device, four_bit=four_bit
     )
     grammar = build_triple_grammar(
         vocab["relations"],
