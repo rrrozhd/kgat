@@ -28,8 +28,8 @@ from kgat.data.judge_export import JudgeExample, read_judge_jsonl, render_judge_
 from kgat.utils.hf import require_ml
 
 
-def verdict_agreement(preds, verdicts) -> dict[str, float]:
-    """Accept/reject agreement at the 0.5 bar, overall AND per class.
+def verdict_agreement(preds, verdicts, *, threshold: float = 0.5) -> dict[str, float]:
+    """Accept/reject agreement at ``threshold``, overall AND per class.
 
     The aggregate hides asymmetry: a judge weak on REJECTS under-protects the
     graph even at high overall agreement, so both class rates are first-class
@@ -43,14 +43,35 @@ def verdict_agreement(preds, verdicts) -> dict[str, float]:
         cls_pairs = [(p, v) for p, v in pairs if v == cls]
         if not cls_pairs:
             return 1.0
-        return sum(1 for p, v in cls_pairs if (p >= 0.5) == (v == "accept")) / len(cls_pairs)
+        return sum(1 for p, v in cls_pairs if (p >= threshold) == (v == "accept")) / len(cls_pairs)
 
-    overall = sum(1 for p, v in pairs if (p >= 0.5) == (v == "accept")) / len(pairs)
+    overall = sum(1 for p, v in pairs if (p >= threshold) == (v == "accept")) / len(pairs)
     return {
         "dev_verdict_accuracy": overall,
         "dev_accept_agreement": rate("accept"),
         "dev_reject_agreement": rate("reject"),
     }
+
+
+def threshold_sweep(preds, verdicts, thresholds=None) -> list[dict[str, float]]:
+    """Per-class agreement at each candidate threshold — the free operating-point knob.
+
+    The regression head makes the decision bar post-hoc tunable: sweeping it on
+    dev trades accept-agreement for reject-agreement without retraining. Rows
+    are dicts with ``threshold`` + the ``verdict_agreement`` fields, plus
+    ``balanced`` (mean of the two class rates) for picking a symmetric point.
+    """
+    rows = []
+    for t in thresholds if thresholds is not None else [round(0.05 * i, 2) for i in range(1, 20)]:
+        m = verdict_agreement(preds, verdicts, threshold=t)
+        rows.append(
+            {
+                "threshold": t,
+                **m,
+                "balanced": (m["dev_accept_agreement"] + m["dev_reject_agreement"]) / 2,
+            }
+        )
+    return rows
 
 
 def encode_judge_example(
@@ -176,11 +197,20 @@ def run_judge_training(cfg: Any) -> Path:
     return output_dir
 
 
-def load_judge_scorer(model_dir: str | Path, *, device: str = "auto", max_seq_len: int = 1024):
+def load_judge_scorer(
+    model_dir: str | Path,
+    *,
+    device: str = "auto",
+    max_seq_len: int = 1024,
+    threshold: float | None = None,
+):
     """Load a trained judge as an ``edge_judge`` ``type_score`` callable.
 
     Returns ``(pair, relation, target) -> float`` — the bridge into
-    ``make_rule_judge(type_score=...)``. Lazy/heavy imports stay inside.
+    ``make_rule_judge(type_score=...)``. With ``threshold`` set, the score is
+    BINARIZED at the dev-tuned operating point (``threshold_sweep``) — "audited
+    precision" semantics: an edge is accepted or it is not. ``None`` keeps the
+    raw regression score. Lazy/heavy imports stay inside.
     """
     require_ml()
     import torch
@@ -201,6 +231,8 @@ def load_judge_scorer(model_dir: str | Path, *, device: str = "auto", max_seq_le
         ).to(dev)
         with torch.no_grad():
             raw = model(**enc).logits.item()
+        if threshold is not None:
+            return 1.0 if raw >= threshold else 0.0
         return max(0.0, min(1.0, float(raw)))
 
     return type_score
@@ -221,4 +253,10 @@ if __name__ == "__main__":
     _main()
 
 
-__all__ = ["run_judge_training", "encode_judge_example", "verdict_agreement", "load_judge_scorer"]
+__all__ = [
+    "run_judge_training",
+    "encode_judge_example",
+    "verdict_agreement",
+    "threshold_sweep",
+    "load_judge_scorer",
+]

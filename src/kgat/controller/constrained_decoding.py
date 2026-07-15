@@ -431,6 +431,49 @@ def decode_triples(
     )
 
 
+def triples_allowed_along(grammar: TripleGrammar, ids: Sequence[int]) -> list[list[int]]:
+    """The allowed-token set at every position while consuming a grammar path.
+
+    ``result[j]`` is the allowed set *before* consuming ``ids[j]`` — the grammar
+    analog of :func:`allowed_along`, used by the routing GRPO gradient pass to
+    renormalize logits over exactly the tokens the rollout sampled from. Raises
+    ``KeyError`` if ``ids`` leaves the grammar (the constraint could never have
+    produced it) and ``ValueError`` if ``ids`` ends mid-path.
+    """
+    out: list[list[int]] = []
+    pos = 0
+    ids = list(ids)
+
+    def run_segment(segment: _Segment) -> object:
+        nonlocal pos
+        node = segment.trie
+        path: list[int] = []
+        while not node.is_leaf:
+            if pos >= len(ids):
+                raise ValueError("ids end mid-grammar — not a complete decode path")
+            out.append(node.allowed())
+            tok = ids[pos]
+            node = node.step(tok)  # KeyError => off-grammar
+            path.append(tok)
+            pos += 1
+        return segment.id_map[tuple(path)]
+
+    n_triples = 0
+    first = run_segment(grammar.first)
+    if first not in grammar.sentinels and first != NONE_LABEL:
+        while True:
+            n_triples += 1
+            at_cap = n_triples >= grammar.max_triples
+            segment = grammar.target_last if at_cap else grammar.target
+            _target, more = run_segment(segment)  # type: ignore[misc]
+            if not more:
+                break
+            run_segment(grammar.rel)
+    if pos != len(ids):
+        raise ValueError(f"{len(ids) - pos} trailing ids beyond the grammar path")
+    return out
+
+
 def encode_triples_target(
     triples: Sequence[tuple[str, str]], grammar: TripleGrammar
 ) -> list[int]:
@@ -473,5 +516,6 @@ __all__ = [
     "build_triple_grammar",
     "TripleDecodeResult",
     "decode_triples",
+    "triples_allowed_along",
     "encode_triples_target",
 ]

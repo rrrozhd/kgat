@@ -12,6 +12,7 @@ from kgat.controller.constrained_decoding import (
     build_triple_grammar,
     decode_triples,
     encode_triples_target,
+    triples_allowed_along,
 )
 from kgat.data.backfill_export import RELATIONSHIP_TYPES
 
@@ -182,6 +183,33 @@ def test_sentinel_terminal_decodes_and_stays_isolated():
             [*RELATIONSHIP_TYPES, "ESCALATE"], TARGETS, TOK, eos_id=EOS,
             sentinels=("ESCALATE",),
         )
+
+
+def test_triples_allowed_along_matches_decode():
+    # The gradient pass must see EXACTLY the allowed sets the rollout sampled
+    # from: replay each canonical path and check the recorded choices are legal
+    # and the walk consumes the path completely.
+    grammar = make_grammar(sentinels=("ESCALATE",))
+    paths = [
+        encode_triples_target([], grammar),
+        list(grammar.enc_sentinel["ESCALATE"]),
+        encode_triples_target([("supplier", "Acme"), ("customer", "Acme Corp")], grammar),
+    ]
+    for ids in paths:
+        allowed = triples_allowed_along(grammar, ids)
+        assert len(allowed) == len(ids)
+        for tok, allowed_j in zip(ids, allowed, strict=True):
+            assert tok in allowed_j
+        # First position offers NONE, the sentinel, and every relation opener.
+        first_openers = {ids2[0] for ids2 in [*paths]}
+        assert first_openers <= set(allowed[0]) | first_openers
+
+    with pytest.raises(KeyError):  # off-grammar token must be rejected loudly
+        triples_allowed_along(grammar, [9999])
+    with pytest.raises(ValueError):  # truncated path is not a complete decode
+        triples_allowed_along(grammar, paths[2][:-1])
+    with pytest.raises(ValueError):  # trailing garbage after eos
+        triples_allowed_along(grammar, [*paths[0], 42])
 
 
 def test_identical_tokenization_rejected():

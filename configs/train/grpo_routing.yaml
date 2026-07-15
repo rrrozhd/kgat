@@ -1,0 +1,46 @@
+# GRPO over the write-path routing policy (kgat.train.grpo_routing): filing
+# episodes, per-chunk {skip | extract | escalate} in one constrained decode,
+# reward = judged precision + distant recall - lam * tokens.
+# Select with train=grpo_routing. Warm-starts from the SFT extractor adapter.
+#   python -m kgat.train.grpo_routing train=grpo_routing model=qwen3-0.6b
+# Smoke (tiny model, synthetic data, CPU/MPS):
+#   python -m kgat.train.grpo_routing train=grpo_routing model=tiny-test \
+#     train.grpo_routing.data_dir=data/backfill/synthetic-smoke \
+#     train.grpo_routing.init_adapter=null train.grpo_routing.max_filings=4 \
+#     train.grpo_routing.max_chunks_per_filing=4 train.grpo_routing.epochs=1
+grpo_routing:
+  data_dir: data/backfill/real-strat-v2
+  split: train
+  output_dir: outputs/adapters/${model.name}-router
+  init_adapter: outputs/adapters/qwen3-0.6b-extractor-r4
+  judge: distant              # distant | rules | <path to distilled judge dir>
+  # Dev-tuned operating point (judge v2 sweep 2026-07-15): overall is ~flat
+  # 0.805-0.814 across 0.5-0.7, so 0.65 buys reject-agreement 0.771 -> 0.870
+  # (the class that protects the graph) for -0.002 overall.
+  judge_threshold: 0.65
+  max_triples: 28
+  max_filings: null
+  max_chunks_per_filing: 12   # episode cap: rollout cost = group_size x chunks x decode
+  group_size: 4
+  batch_filings: 2
+  epochs: 1
+  learning_rate: 1.0e-5
+  temperature: 1.0            # rollout sampling; ratios exact at T=1
+  lam: 0.1
+  escalation_cost_tokens: 2000
+  cost_cap: 20000
+  precision_weight: 0.5
+  recall_weight: 0.5
+  loss_norm: dr_grpo          # token-sum over norm_constant (no 1/len bias)
+  norm_constant: 32.0
+  scale_rewards: false        # Dr. GRPO: no group-std difficulty bias
+  clip_eps_low: 0.2
+  clip_eps_high: 0.28         # DAPO clip-higher
+  updates_per_batch: 1
+  max_prompt_tokens: 1024
+  four_bit: auto
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  save_every: 20
+  max_examples: null
