@@ -1,28 +1,46 @@
-# kgat — Budget-Adaptive, Governed KG Traversal
+# kgat — Budget-Adaptive, Governed KG Traversal & Construction
 
-A cost-adaptive controller for multi-hop knowledge-graph question answering (KGQA).
-A small model (~0.6B) acts as a **traversal policy**: given a question and the
-current frontier of a reasoning path, it picks the next relation to expand or emits
-`STOP`. A separate, swappable **synthesizer** turns the retrieved paths into answers.
-The whole traversal is wrapped in a **governance layer** that enforces per-hop policy
-and emits an audit certificate.
+Small constrained models + cost-aware policies, on **both sides** of a knowledge
+graph:
 
-The contribution is not "a small model can do KGQA" — it is:
+- **Read path (traversal KGQA):** a ~0.6B model acts as a traversal policy —
+  given a question and the current frontier it picks the next relation to expand
+  or emits `STOP`, under a token-trie constraint that makes off-graph actions
+  impossible. A swappable synthesizer turns retrieved paths into answers.
+- **Write path (graph building / backfill):** the same machinery inverted — a
+  grammar-constrained extractor reads document chunks and emits schema-valid
+  triples or `NONE`, escalating only its low-confidence chunks to a big-LLM
+  teacher pipeline. "Skip this chunk" plays the role of `STOP`.
 
-1. **Budget-adaptive stopping** — the controller learns to go deep only when needed,
-   traced as a cost/quality frontier via a cost-penalized RL reward.
-2. **Governed, auditable traversal** as a first-class property.
-
-Model size is a *swept variable*, not a fixed choice.
+Both paths are wrapped in a **governance layer** (per-hop / per-edge policies,
+audit certificates, fail-closed provenance) and evaluated the same way: a
+**cost/quality frontier** traced by a cost-penalized reward. The contribution is
+not "a small model can do X" — it is budget-adaptive behavior, measured as
+quality-per-dollar, with auditability as a first-class property. Model size is a
+*swept variable*, not a fixed choice.
 
 ---
 
 ## Status
 
-The foundation (M0–M1) **and the training pipeline (M3–M5)** are implemented. The
-whole chain — mine → SFT → constrained-decode eval → GRPO — has been validated
-end-to-end on CPU/MPS with a tiny model (`model=tiny-test`); real-model training
-targets a GPU (see `notebooks/colab_kgat.ipynb`).
+Both pipelines run end-to-end on real data; per-run detail lives in
+[STATUS.md](STATUS.md), artifacts in `docs/results/`.
+
+**Read path:** the full chain — mine → SFT → trie-constrained decode → GRPO —
+is GPU-validated. On FinKG, SFT lifts the 0.6B controller from 0.16 to 0.82 Hit
+with depth-adaptive search; GRPO (Dr. GRPO defaults + regret cost + exact
+potential shaping) reaches 0.89 at unchanged cost.
+
+**Write path (backfill pilot, 2026-07):** trained on distant supervision from a
+production SEC-filing pipeline's own logged extractions (every committed edge
+stores its evidence), the grammar-constrained 0.6B extractor recovers **~86% of
+the teacher's edges while escalating only ~21–28% of chunks** to the teacher —
+roughly a 60–80% cut of the measured backfill API cost at a chosen, dialable
+quality point. Phase 2 (GRPO over per-chunk `{skip | extract | escalate}` with a
+judge-audited reward) is scaffolded and tested: objective evidence gates + the
+teacher's critic distilled into a 150M cross-encoder from ~490k logged verdicts
+(no LLM inside the RL loop), and write-path governance mirrors the read path
+(per-edge policies, fail-closed grounding, per-filing audit certificates).
 
 | Milestone | What | State |
 |-----------|------|-------|
@@ -30,12 +48,14 @@ targets a GPU (see `notebooks/colab_kgat.ipynb`).
 | M1 | Data + eval foundation (metrics, cost, frontier, harness) | ✅ implemented |
 | M2 | Baseline reproduction harness (RoG / GCR / GNN-RAG wrappers) | 🟡 stubbed (needs verified official repos + published numbers) |
 | M3 | Trajectory mining (BFS oracle → engine replay → SFT JSONL) | ✅ implemented + tested |
-| M4 | Decoder controller + trie-constrained decoding + LoRA/QLoRA SFT | ✅ implemented; CPU/MPS-validated, GPU run pending |
-| M5 | Trajectory-level GRPO + λ frontier | ✅ implemented; smoke-tested on MPS, **not yet GPU-validated** |
-| M6 | Size sweep + cross-encoder floor | ⏳ stub (`crossencoder_policy`) |
+| M4 | Decoder controller + trie-constrained decoding + LoRA/QLoRA SFT | ✅ GPU-validated (FinKG + WebQSP mining) |
+| M5 | Trajectory-level GRPO + λ frontier | ✅ GPU-validated (sweeps in docs/results/) |
+| M6 | Size sweep + cross-encoder floor | 🟡 cross-encoder now trained as the write-path judge; controller floor pending |
 | M7 | Arch B / Arch C arms | ⏳ stub (`gnn_proposer`; dynamic trie shares `constrained_decoding`) |
-| M8 | Governance layer + audit + overhead measurement | 🟡 policies + audit implemented & wired; overhead study pending |
+| M8 | Governance layer + audit + overhead measurement | 🟡 read + write policies/certificates implemented & wired; overhead study pending |
 | M9 | Ablations, transfer KG, write-up | ⏳ future |
+| — | **Write path**: extractor SFT + confidence cascade + frontier | ✅ 4 measured rounds on real data (docs/results/backfill-*) |
+| — | **Write path phase 2**: routing RL + distilled judge + edge governance | 🟡 machinery + judge v1 done; GRPO loop wiring pending |
 
 ---
 
@@ -94,6 +114,26 @@ The full chain smoke-tests anywhere (CPU/MPS, ~1 min, tiny random model):
 bash scripts/run_sft.sh sample tiny-test dev
 ```
 
+### Write-path workflow (backfill extractor)
+
+```bash
+# Offline end-to-end (synthetic pairs, tiny model — no GPU, no data export):
+bash scripts/run_backfill_pilot.sh tiny-test 20
+
+# Real pipeline: export distant-supervision pairs (SQL contract in the module
+# docstring), SFT the extractor, sweep the escalation threshold into a frontier:
+python -m kgat.data.backfill_export --export exports/pairs.jsonl --out data/backfill/real
+python -m kgat.train.sft_extractor train=sft_extractor model=qwen3-0.6b \
+    train.sft_extractor.data_dir=data/backfill/real
+python -m kgat.eval.extractor_cascade --model-id Qwen/Qwen3-0.6B \
+    --adapter outputs/adapters/qwen3-0.6b-extractor \
+    --data-dir data/backfill/real --out-dir outputs/backfill/cascade
+
+# Distill the teacher's per-edge critic into the 150M reward judge:
+python -m kgat.data.judge_export --export exports/judge.jsonl --out data/judge
+python -m kgat.train.judge train=judge model=crossencoder-modernbert
+```
+
 On Colab, open `notebooks/colab_kgat.ipynb` — T4 covers mining/SFT/eval; use an
 A100 for the full GRPO sweep. **Note:** GRPO is implemented but not yet validated
 on a real GPU run; smoke-test (`train.grpo.max_questions=32`) before a long sweep.
@@ -132,18 +172,24 @@ per line, `*.jsonl`):
 ```
 configs/          Hydra config groups (model / dataset / train / experiment / controller / synth)
 src/kgat/
-  data/           schemas (THE contract), loaders, subgraph normalization
-  graph/          KGStore ABC + in-memory impl (+ Neo4j adapter stub)
-  controller/     TraversalController ABC + DummyController (+ neural policy stubs)
+  data/           schemas (THE contract), loaders, finkg generator,
+                  backfill_export + judge_export (write-path distant supervision)
+  graph/          KGStore ABC + in-memory impl (+ Neo4j adapter stub);
+                  KGWriteStore + per-edge provenance (write side)
+  controller/     TraversalController ABC + decoder/dummy policies;
+                  constrained_decoding: relation trie (read) + triple grammar (write)
   synthesis/      AnswerSynthesizer ABC + DummySynthesizer (+ path_reader stub)
-  governance/     HopPolicy ABC + AuditCertificate datamodel (concrete policies stubbed)
-  traversal/      engine (main loop) + budget ledger  — IMPLEMENTED
-  train/          reward fn (IMPLEMENTED) + mining/sft/grpo (stubs)
-  eval/           metrics, cost, frontier, harness      — IMPLEMENTED
-  baselines/      RoG / GCR / GNN-RAG wrappers           — stubs
-  utils/          JSONL + optional W&B logging, seeding
-scripts/          download_data / reproduce_baselines / run_sft / run_grpo / eval_frontier / sweep
-tests/            pytest suite (schemas, graph, engine, reward, metrics, cost)
+  governance/     read: HopPolicy chain + AuditCertificate;
+                  write: EdgePolicy chain + WriteCertificate + governed_commit
+  traversal/      engine (main loop) + budget ledger
+  train/          reward, mining, sft, grpo (read path);
+                  sft_extractor, backfill_routing, edge_judge, judge (write path)
+  eval/           metrics, cost, frontier, harness; extractor_cascade (write path)
+  baselines/      RoG / GCR / GNN-RAG wrappers — stubs
+  utils/          HF loading, JSONL + optional W&B logging, seeding
+scripts/          download_data / run_sft / run_grpo / run_backfill_pilot / eval_frontier / sweep
+tests/            pytest suite (135 tests; every module above with pure-python coverage)
+docs/             design notes (DESIGN-*.md) + measured results (docs/results/)
 ```
 
 ## Design notes (deviations from the brief, and why)
