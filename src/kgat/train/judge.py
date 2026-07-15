@@ -28,6 +28,31 @@ from kgat.data.judge_export import JudgeExample, read_judge_jsonl, render_judge_
 from kgat.utils.hf import require_ml
 
 
+def verdict_agreement(preds, verdicts) -> dict[str, float]:
+    """Accept/reject agreement at the 0.5 bar, overall AND per class.
+
+    The aggregate hides asymmetry: a judge weak on REJECTS under-protects the
+    graph even at high overall agreement, so both class rates are first-class
+    metrics. Empty classes report 1.0 (vacuous).
+    """
+    pairs = list(zip(preds, verdicts, strict=True))
+    if not pairs:
+        raise ValueError("no predictions to score")
+
+    def rate(cls: str) -> float:
+        cls_pairs = [(p, v) for p, v in pairs if v == cls]
+        if not cls_pairs:
+            return 1.0
+        return sum(1 for p, v in cls_pairs if (p >= 0.5) == (v == "accept")) / len(cls_pairs)
+
+    overall = sum(1 for p, v in pairs if (p >= 0.5) == (v == "accept")) / len(pairs)
+    return {
+        "dev_verdict_accuracy": overall,
+        "dev_accept_agreement": rate("accept"),
+        "dev_reject_agreement": rate("reject"),
+    }
+
+
 def encode_judge_example(
     example: JudgeExample, tokenizer: Any, *, max_seq_len: int
 ) -> dict[str, list[int] | float]:
@@ -104,6 +129,7 @@ def run_judge_training(cfg: Any) -> Path:
         }
 
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    save_steps = int(jcfg.get("save_steps") or 0)
     args = TrainingArguments(
         output_dir=str(output_dir / "trainer"),
         per_device_train_batch_size=int(jcfg.batch_size),
@@ -111,7 +137,10 @@ def run_judge_training(cfg: Any) -> Path:
         num_train_epochs=float(jcfg.epochs),
         learning_rate=float(jcfg.learning_rate),
         logging_steps=50,
-        save_strategy="no",
+        # Long runs on interruptible pods keep rolling checkpoints; smoke runs skip.
+        save_strategy="steps" if save_steps else "no",
+        save_steps=save_steps or 500,
+        save_total_limit=2,
         report_to=[],
         seed=int(cfg.seed),
         bf16=use_bf16,
@@ -121,26 +150,29 @@ def run_judge_training(cfg: Any) -> Path:
     trainer = Trainer(model=model, args=args, train_dataset=train_enc, data_collator=collate)
     result = trainer.train()
 
-    # Dev report: MSE + accept/reject accuracy at the 0.5 bar.
+    # Dev report: MSE + accept/reject agreement, overall and per class.
     preds = trainer.predict(dev_enc).predictions.reshape(-1)
     golds = [e.faithfulness for e in dev_examples]
     verdicts = [e.verdict for e in dev_examples]
     mse = sum((p - g) ** 2 for p, g in zip(preds, golds, strict=True)) / len(golds)
-    acc = sum(
-        1 for p, v in zip(preds, verdicts, strict=True) if (p >= 0.5) == (v == "accept")
-    ) / len(verdicts)
+    agreement = verdict_agreement([float(p) for p in preds], verdicts)
 
     model.save_pretrained(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
     metrics = {
         "train_loss": result.training_loss,
         "dev_mse": float(mse),
-        "dev_verdict_accuracy": float(acc),
+        **{k: float(v) for k, v in agreement.items()},
         "n_train": len(train_enc),
         "n_dev": len(dev_enc),
     }
     (output_dir / "judge_metrics.json").write_text(json.dumps(metrics, indent=2))
-    print(f"judge done: loss={result.training_loss:.4f} dev_mse={mse:.4f} dev_acc={acc:.3f}")
+    print(
+        f"judge done: loss={result.training_loss:.4f} dev_mse={mse:.4f} "
+        f"acc={agreement['dev_verdict_accuracy']:.3f} "
+        f"accept={agreement['dev_accept_agreement']:.3f} "
+        f"reject={agreement['dev_reject_agreement']:.3f}"
+    )
     return output_dir
 
 
@@ -189,4 +221,4 @@ if __name__ == "__main__":
     _main()
 
 
-__all__ = ["run_judge_training", "encode_judge_example", "load_judge_scorer"]
+__all__ = ["run_judge_training", "encode_judge_example", "verdict_agreement", "load_judge_scorer"]

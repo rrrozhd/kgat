@@ -14,7 +14,7 @@ from kgat.data.judge_export import (
     render_judge_input,
     split_judge_examples,
 )
-from kgat.train.judge import encode_judge_example
+from kgat.train.judge import encode_judge_example, verdict_agreement
 
 
 def make_rows():
@@ -129,6 +129,22 @@ def test_encode_judge_example_truncates_and_labels():
     enc = encode_judge_example(example, FakeTokenizer(), max_seq_len=64)
     assert len(enc["input_ids"]) == 64
     assert enc["labels"] == 0.75
+
+
+def test_verdict_agreement_is_per_class():
+    preds = [0.9, 0.2, 0.4, 0.6]  # right, wrong, right, wrong
+    verdicts = ["accept", "accept", "reject", "reject"]
+    m = verdict_agreement(preds, verdicts)
+    assert m["dev_verdict_accuracy"] == 0.5
+    assert m["dev_accept_agreement"] == 0.5
+    assert m["dev_reject_agreement"] == 0.5
+    # Asymmetry is visible: perfect on accepts, broken on rejects.
+    m = verdict_agreement([0.9, 0.8, 0.7], ["accept", "accept", "reject"])
+    assert m["dev_accept_agreement"] == 1.0
+    assert m["dev_reject_agreement"] == 0.0
+    assert verdict_agreement([0.9], ["accept"])["dev_reject_agreement"] == 1.0  # vacuous
+    with pytest.raises(ValueError):
+        verdict_agreement([], [])
 
 
 def test_empty_export_raises(tmp_path):
