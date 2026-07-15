@@ -28,6 +28,7 @@ data/metaqa/
 data/checkpoints/
 data/finkg/
 data/backfill/
+data/judge/
 !data/sample/
 
 # OS
