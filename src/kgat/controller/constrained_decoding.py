@@ -261,7 +261,7 @@ class TripleGrammar:
     targets: tuple[str, ...]
     eos_id: int
     max_triples: int
-    first: _Segment  # NONE | relation (opens the output)
+    first: _Segment  # NONE | sentinel | relation (opens the output)
     rel: _Segment  # relation only (after a `` ;`` continuation)
     target: _Segment  # target + (continue | end)
     target_last: _Segment  # target + end only (at the max_triples cap)
@@ -269,6 +269,8 @@ class TripleGrammar:
     enc_rel: dict[str, tuple[int, ...]]  # `` <relation> ::``
     enc_target: dict[str, tuple[int, ...]]  # `` <target>`` (bare)
     enc_sep: tuple[int, ...]  # `` ;``
+    sentinels: tuple[str, ...] = ()  # extra whole-output terminals (e.g. ESCALATE)
+    enc_sentinel: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 def build_triple_grammar(
@@ -278,30 +280,36 @@ def build_triple_grammar(
     *,
     eos_id: int,
     max_triples: int = 8,
+    sentinels: Sequence[str] = (),
 ) -> TripleGrammar:
     """Compile the extraction grammar for a relation taxonomy + target vocabulary.
 
     ``tokenizer`` needs ``encode(text, add_special_tokens=False) -> list[int]``.
-    Raises ``ValueError`` on empty inputs, names that collide with the grammar's
-    separators or ``NONE``, or entries that are token-prefixes of each other.
+    ``sentinels`` are extra NONE-like terminals available ONLY as the whole output
+    (e.g. ``ESCALATE`` for the phase-2 routing policy: the model either routes or
+    extracts, in one constrained decode). Raises ``ValueError`` on empty inputs,
+    names that collide with the grammar's separators/sentinels, or entries that
+    are token-prefixes of each other.
     """
     rels = list(dict.fromkeys(relations))
     tgts = list(dict.fromkeys(targets))
+    sents = list(dict.fromkeys(sentinels))
     if not rels or not tgts:
         raise ValueError("triple grammar needs at least one relation and one target")
     if max_triples < 1:
         raise ValueError("max_triples must be >= 1")
-    reserved = (NONE_LABEL, REL_TARGET_SEP.strip(), TRIPLE_SEP.strip())
+    reserved = (NONE_LABEL, REL_TARGET_SEP.strip(), TRIPLE_SEP.strip(), *sents)
     for name in (*rels, *tgts):
         if not name or not name.strip():
             raise ValueError("empty grammar candidate name")
-        if name == NONE_LABEL or any(sep in name for sep in reserved[1:]):
+        if name in (NONE_LABEL, *sents) or any(sep in name for sep in reserved[1:3]):
             raise ValueError(f"candidate {name!r} collides with a reserved grammar token")
 
     def enc(text: str) -> tuple[int, ...]:
         return tuple(tokenizer.encode(text, add_special_tokens=False))
 
     enc_none = enc(target_text(NONE_LABEL)) + (eos_id,)
+    enc_sentinel = {s: enc(target_text(s)) + (eos_id,) for s in sents}
     enc_rel = {r: enc(target_text(r)) + enc(REL_TARGET_SEP) for r in rels}
     enc_target = {t: enc(target_text(t)) for t in tgts}
     enc_sep = enc(TRIPLE_SEP)
@@ -321,12 +329,15 @@ def build_triple_grammar(
         end_entries[ids + (eos_id,)] = (t, False)
         cont_entries[ids + enc_sep] = (t, True)
 
+    sentinel_entries: dict[tuple[int, ...], object] = {
+        ids: s for s, ids in enc_sentinel.items()
+    }
     return TripleGrammar(
         relations=tuple(rels),
         targets=tuple(tgts),
         eos_id=eos_id,
         max_triples=max_triples,
-        first=_build_segment({enc_none: NONE_LABEL, **rel_entries}),
+        first=_build_segment({enc_none: NONE_LABEL, **sentinel_entries, **rel_entries}),
         rel=_build_segment(rel_entries),
         target=_build_segment({**end_entries, **cont_entries}),
         target_last=_build_segment(end_entries),
@@ -334,6 +345,8 @@ def build_triple_grammar(
         enc_rel=enc_rel,
         enc_target=enc_target,
         enc_sep=enc_sep,
+        sentinels=tuple(sents),
+        enc_sentinel=enc_sentinel,
     )
 
 
@@ -342,9 +355,10 @@ class TripleDecodeResult:
     """Outcome of one constrained triple extraction."""
 
     ids: tuple[int, ...]  # full emitted path incl. the final eos
-    triples: tuple[tuple[str, str], ...]  # (relation, target); empty == NONE
+    triples: tuple[tuple[str, str], ...]  # (relation, target); empty == NONE/sentinel
     logprob: float  # sum of temp-1 mask-renormalized step logprobs
     n_choices: int  # steps with >1 allowed token (forced steps excluded)
+    sentinel: str | None = None  # which extra terminal was emitted (None for NONE/triples)
 
     @property
     def confidence(self) -> float:
@@ -393,8 +407,11 @@ def decode_triples(
         return segment.id_map[tuple(path)]
 
     triples: list[tuple[str, str]] = []
+    sentinel: str | None = None
     first = run_segment(grammar.first)
-    if first != NONE_LABEL:
+    if first in grammar.sentinels:
+        sentinel = str(first)
+    elif first != NONE_LABEL:
         relation = str(first)
         while True:
             at_cap = len(triples) + 1 >= grammar.max_triples
@@ -410,6 +427,7 @@ def decode_triples(
         triples=tuple(triples),
         logprob=total_logprob,
         n_choices=n_choices,
+        sentinel=sentinel,
     )
 
 

@@ -161,6 +161,29 @@ def test_encode_rejects_out_of_grammar():
         encode_triples_target([("supplier", "Unknown Co")], grammar)
 
 
+def test_sentinel_terminal_decodes_and_stays_isolated():
+    grammar = make_grammar(sentinels=("ESCALATE",))
+    gold = list(grammar.enc_sentinel["ESCALATE"])
+    result = decode_triples(forcing_logits_fn(gold), grammar)
+    assert result.sentinel == "ESCALATE"
+    assert result.triples == ()
+    assert list(result.ids) == gold
+
+    # NONE and plain triples still decode with sentinel=None.
+    none_gold = encode_triples_target([], grammar)
+    assert decode_triples(forcing_logits_fn(none_gold), grammar).sentinel is None
+    triple_gold = encode_triples_target([("supplier", "Bolt Inc")], grammar)
+    out = decode_triples(forcing_logits_fn(triple_gold), grammar)
+    assert out.sentinel is None and out.triples == (("supplier", "Bolt Inc"),)
+
+    # A relation name colliding with a sentinel is rejected at build time.
+    with pytest.raises(ValueError):
+        build_triple_grammar(
+            [*RELATIONSHIP_TYPES, "ESCALATE"], TARGETS, TOK, eos_id=EOS,
+            sentinels=("ESCALATE",),
+        )
+
+
 def test_identical_tokenization_rejected():
     class CollapsingTokenizer:
         """Distinct strings, identical ids (lowercases) — undecidable, must raise."""
