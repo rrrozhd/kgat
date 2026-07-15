@@ -14,6 +14,7 @@ from kgat.train.backfill_routing import (
     ChunkDecision,
     CriticVerdict,
     decision_from_result,
+    judge_from_critic,
     rollout_filing,
     routing_reward,
 )
@@ -74,23 +75,33 @@ def test_distant_reward_without_critic():
     assert r.reward == 0.5 * r.precision + 0.5 * r.recall
 
 
-def test_critic_audited_precision_overrides_distant():
-    # The critic can accept an edge the teacher never had (exceed-the-teacher path)
-    # and reject one the teacher did have.
+def test_judged_precision_overrides_distant():
+    # The judge can score up an edge the teacher never had (exceed-the-teacher
+    # path) and zero one the teacher did have.
     pairs = [pair([("supplier", "A")])]
     decisions = [decision(ROUTE_EXTRACT, [("supplier", "A"), ("competitor", "D")])]
 
-    def critic(filer, relation, target, text) -> CriticVerdict:
-        assert filer == "Filer Co" and text == "chunk text"
-        if target == "D":
-            return CriticVerdict(verdict="accept", faithfulness=0.9)
-        return CriticVerdict(verdict="reject", faithfulness=0.1)
+    def judge(p, relation, target) -> float:
+        assert p.filer == "Filer Co"
+        return 0.9 if target == "D" else 0.1
 
-    r = routing_reward(pairs, decisions, critic=critic, lam=0.0)
-    assert r.precision == 1 / 2  # D accepted, A rejected — the judge rules, not the labels
+    r = routing_reward(pairs, decisions, judge=judge, lam=0.0)
+    assert r.precision == pytest.approx((0.9 + 0.1) / 2)  # mean score, judge rules
     # Recall stays DISTANT: emitted A matches gold (recovered); extra D has no effect.
     assert r.recall == 1.0
-    assert r.n_accepted == 1
+    assert r.n_accepted == 1  # only D clears the 0.5 diagnostic bar
+
+
+def test_judge_from_critic_adapter():
+    def critic(filer, relation, target, text) -> CriticVerdict:
+        if target == "A":
+            return CriticVerdict(verdict="accept", faithfulness=0.8)
+        return CriticVerdict(verdict="reject", faithfulness=0.7)  # reject scores 0
+
+    judge = judge_from_critic(critic)
+    p = pair([])
+    assert judge(p, "supplier", "A") == 0.8
+    assert judge(p, "supplier", "B") == 0.0
 
 
 def test_degenerate_policies_are_dominated():

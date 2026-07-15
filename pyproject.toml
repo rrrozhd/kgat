@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kgat"
-version = "0.0.9"
+version = "0.0.10"
 description = "Budget-adaptive, governed knowledge-graph traversal for multi-hop KGQA"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -8,15 +8,17 @@ sentinels=(ESCALATE_LABEL,))``) — so the router and the extractor are the same
 0.6B model and GRPO optimizes the trie-masked logprobs it already knows how to
 score.
 
-The reward follows the write-path objective verbatim: **critic-audited precision
-+ distant recall − λ·tokens**. alphina's per-edge critic (relationship_critic.py)
-IS the reward model — it is injected here as a plain callable so this module
-stays pure Python: unit tests use fakes, the training run wraps the real
-LLM-as-judge API. Distant recall credits an escalated chunk with all of its
-teacher edges (the big pipeline is the label source), which is what lets the
-policy learn WHEN escalation is worth the tokens. This is the arm that can
-exceed the teacher: SFT imitates its labels; the critic rewards precision the
-teacher itself lacked.
+The reward follows the write-path objective verbatim: **judged precision +
+distant recall − λ·tokens**. Edge quality comes from ``kgat.train.edge_judge``
+(objective existence gates + the critic DISTILLED into a small cross-encoder
+from alphina's ~490k logged verdicts) injected as a plain callable, so this
+module stays pure Python: unit tests use fakes, and no LLM runs inside the
+training loop — the live critic (relationship_critic.py) is reserved for
+eval-time audits via ``judge_from_critic``. Distant recall credits an escalated
+chunk with all of its teacher edges (the big pipeline is the label source),
+which is what lets the policy learn WHEN escalation is worth the tokens. This is
+the arm that can exceed the teacher: SFT imitates its labels; the judge rewards
+precision the teacher itself lacked.
 
 Like ``kgat.train.reward``, everything here is a pure function of the episode —
 a bug in the reward silently corrupts every downstream experiment, so it must be
@@ -30,6 +32,7 @@ from dataclasses import dataclass
 
 from kgat.controller.constrained_decoding import TripleDecodeResult
 from kgat.data.backfill_export import ExtractionPair
+from kgat.train.edge_judge import EdgeJudgeFn
 
 ESCALATE_LABEL = "ESCALATE"
 
@@ -84,16 +87,28 @@ def rollout_filing(
 
 @dataclass(frozen=True)
 class CriticVerdict:
-    """kgat-side mirror of alphina's ``EdgeVerdict`` (the reward model's ruling)."""
+    """kgat-side mirror of alphina's ``EdgeVerdict`` (the logged judgment schema)."""
 
     verdict: str  # "accept" | "reject" | "relabel"
     corrected_type: str | None = None
     faithfulness: float = 0.0
 
 
-# (filer, relation, target, chunk_text) -> verdict. The training run wraps
-# alphina's critic prompt behind this; tests inject fakes.
+# (filer, relation, target, chunk_text) -> verdict. Wraps an LLM-as-judge; kept
+# for eval-time audits — the TRAINING loop uses EdgeJudgeFn (kgat.train.edge_judge).
 CriticFn = Callable[[str, str, str, str], CriticVerdict]
+
+
+def judge_from_critic(critic: CriticFn) -> EdgeJudgeFn:
+    """Adapt an LLM critic to the edge-judge contract (accept -> faithfulness, else 0)."""
+
+    def judge(pair: ExtractionPair, relation: str, target: str) -> float:
+        ruling = critic(pair.filer, relation, target, pair.text)
+        if ruling.verdict == "accept":
+            return max(0.0, min(1.0, ruling.faithfulness))
+        return 0.0
+
+    return judge
 
 
 @dataclass(frozen=True)
@@ -101,12 +116,12 @@ class RoutingReward:
     """The episode reward and its audited components (for logging/ablation)."""
 
     reward: float
-    precision: float  # critic-audited (or distant, when critic is None)
+    precision: float  # mean judge score over emitted edges (distant when judge=None)
     recall: float  # distant: recovered teacher edges / all teacher edges
     cost_tokens: float  # small-model tokens + priced escalations
     normalized_cost: float
     n_emitted: int
-    n_accepted: int
+    n_accepted: int  # emitted edges with judge score >= 0.5 (diagnostic)
     n_escalated: int
 
 
@@ -114,19 +129,22 @@ def routing_reward(
     pairs: Sequence[ExtractionPair],
     decisions: Sequence[ChunkDecision],
     *,
-    critic: CriticFn | None = None,
+    judge: EdgeJudgeFn | None = None,
     lam: float = 0.1,
     escalation_cost_tokens: float = 2000.0,
     cost_cap: float = 20000.0,
     precision_weight: float = 0.5,
     recall_weight: float = 0.5,
 ) -> RoutingReward:
-    """Score one filing episode: critic-audited precision + distant recall − λ·tokens.
+    """Score one filing episode: judged precision + distant recall − λ·tokens.
 
-    * **precision** — over the edges the policy EMITTED (extract routes): the
-      fraction the critic accepts (relabel/reject are the emitter's mistakes).
-      With ``critic=None`` (offline runs) it falls back to distant precision
-      against the teacher labels. No emitted edges -> 1.0 (nothing claimed).
+    * **precision** — the MEAN judge score over the edges the policy EMITTED
+      (extract routes). The judge (``kgat.train.edge_judge``) layers objective
+      existence gates (grounding, target-is-company, filer-is-party) under a
+      type-faithfulness score in [0, 1] — the distilled critic when available,
+      the distant-label anchor otherwise. ``judge=None`` falls back to pure
+      distant precision (emitted ∩ teacher). No emitted edges -> 1.0 (nothing
+      claimed, nothing wrong — recall carries the pressure to claim).
     * **recall** — distant, over ALL teacher edges of the filing: an extract
       chunk recovers ``emitted ∩ gold``; an escalated chunk recovers all its
       gold edges (the teacher pipeline is the label source); a skip recovers
@@ -138,7 +156,11 @@ def routing_reward(
     ``escalate-everything`` scores perfect recall at maximum cost;
     ``skip-everything`` is free but scores recall 0 on any filing with edges —
     λ within (0, min(precision_weight, recall_weight)) keeps both degenerate
-    policies dominated, same guard logic as ``kgat.train.reward``.
+    policies dominated, same guard logic as ``kgat.train.reward``. A judge that
+    can certify novel edges (the distilled critic) is what lets total reward
+    exceed the pure-imitation ceiling: precision then pays for true edges the
+    teacher never had, while recall keeps the teacher's edges from being
+    abandoned.
     """
     if len(pairs) != len(decisions):
         raise ValueError(f"{len(pairs)} pairs vs {len(decisions)} decisions")
@@ -149,6 +171,7 @@ def routing_reward(
 
     n_emitted = n_accepted = n_escalated = 0
     gold_total = gold_recovered = 0
+    score_sum = 0.0
     cost = 0.0
 
     for pair, decision in zip(pairs, decisions, strict=True):
@@ -169,13 +192,14 @@ def routing_reward(
         gold_recovered += len(set(decision.triples) & gold)
         for relation, target in decision.triples:
             n_emitted += 1
-            if critic is None:
-                n_accepted += int((relation, target) in gold)
+            if judge is None:
+                score = 1.0 if (relation, target) in gold else 0.0
             else:
-                ruling = critic(pair.filer, relation, target, pair.text)
-                n_accepted += int(ruling.verdict == "accept")
+                score = max(0.0, min(1.0, float(judge(pair, relation, target))))
+            score_sum += score
+            n_accepted += int(score >= 0.5)
 
-    precision = n_accepted / n_emitted if n_emitted else 1.0
+    precision = score_sum / n_emitted if n_emitted else 1.0
     recall = gold_recovered / gold_total if gold_total else 1.0
     normalized = max(0.0, min(cost / cost_cap, 1.0))
     reward = precision_weight * precision + recall_weight * recall - lam * normalized
@@ -201,6 +225,7 @@ __all__ = [
     "rollout_filing",
     "CriticVerdict",
     "CriticFn",
+    "judge_from_critic",
     "RoutingReward",
     "routing_reward",
 ]

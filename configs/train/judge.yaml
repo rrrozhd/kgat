@@ -1,0 +1,15 @@
+# Distill alphina's edge critic into a ~150M cross-encoder (kgat.train.judge).
+# Select with train=judge model=crossencoder-modernbert. data_dir points at a
+# kgat.data.judge_export output (train/dev/test.jsonl):
+#   python -m kgat.data.judge_export --export exports/judge.jsonl --out data/judge
+#   python -m kgat.train.judge train=judge model=crossencoder-modernbert
+judge:
+  data_dir: data/judge
+  output_dir: outputs/judges/${model.name}
+  max_examples: null          # cap for smoke runs
+  max_dev: 5000
+  learning_rate: 3.0e-5
+  epochs: 1
+  batch_size: 16
+  grad_accum: 2
+  max_seq_len: 1024           # chunks median ~540 tokens; tail truncates
