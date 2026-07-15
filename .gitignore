@@ -31,5 +31,11 @@ data/backfill/
 data/judge/
 !data/sample/
 
+# Internal notes & results (local only — not part of the public repo)
+/STATUS.md
+/docs/
+data/judge-full/
+data/judge-full-export.jsonl.gz
+
 # OS
 .DS_Store
