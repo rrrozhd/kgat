@@ -23,23 +23,30 @@ quality-per-dollar, with auditability as a first-class property. Model size is a
 
 ## Status
 
-Both pipelines run end-to-end on real data.
+Both pipelines run end-to-end on real data. **Current focus: the write path**
+(KG construction); the read path is validated method-wise and parked until a
+real-graph training corpus is exported.
+
+**Write path (backfill, 2026-07 — active):** trained on distant supervision from
+a production SEC-filing pipeline's own logged extractions (every committed edge
+stores its evidence), the grammar-constrained 0.6B extractor recovers **~86% of
+the teacher's edges while escalating only ~21–28% of chunks** to the teacher —
+a dialable cost/quality frontier for graph construction, with escalation rate as
+the cost axis. Phase 2 — GRPO over per-chunk `{skip | extract | escalate}` with
+a judge-audited reward — is wired and GPU-validated at smoke scale: the teacher's
+critic is distilled into a 150M cross-encoder from ~490k logged verdicts
+(81% held-out agreement; the decision threshold is a tuned post-hoc knob, no LLM
+inside the RL loop), objective evidence gates and per-edge governance
+(fail-closed grounding, per-filing audit certificates) mirror the read path, and
+the routing policy trains with grammar-masked clipped policy gradients. Known
+open item before a full RL run: the SFT-initialized policy never samples
+`ESCALATE` (cold start) — the fix is a warm-start SFT pass that labels the
+extractor's own low-confidence chunks as escalation targets.
 
 **Read path:** the full chain — mine → SFT → trie-constrained decode → GRPO —
 is GPU-validated. On FinKG, SFT lifts the 0.6B controller from 0.16 to 0.82 Hit
 with depth-adaptive search; GRPO (Dr. GRPO defaults + regret cost + exact
 potential shaping) reaches 0.89 at unchanged cost.
-
-**Write path (backfill pilot, 2026-07):** trained on distant supervision from a
-production SEC-filing pipeline's own logged extractions (every committed edge
-stores its evidence), the grammar-constrained 0.6B extractor recovers **~86% of
-the teacher's edges while escalating only ~21–28% of chunks** to the teacher —
-a dialable cost/quality frontier for graph construction, with escalation rate as
-the cost axis. Phase 2 (GRPO over per-chunk `{skip | extract | escalate}` with a
-judge-audited reward) is scaffolded and tested: objective evidence gates + the
-teacher's critic distilled into a 150M cross-encoder from ~490k logged verdicts
-(no LLM inside the RL loop), and write-path governance mirrors the read path
-(per-edge policies, fail-closed grounding, per-filing audit certificates).
 
 | Milestone | What | State |
 |-----------|------|-------|
@@ -54,7 +61,7 @@ teacher's critic distilled into a 150M cross-encoder from ~490k logged verdicts
 | M8 | Governance layer + audit + overhead measurement | 🟡 read + write policies/certificates implemented & wired; overhead study pending |
 | M9 | Ablations, transfer KG, write-up | ⏳ future |
 | — | **Write path**: extractor SFT + confidence cascade + frontier | ✅ 4 measured rounds on real data |
-| — | **Write path phase 2**: routing RL + distilled judge + edge governance | 🟡 machinery + judge v1 done; GRPO loop wiring pending |
+| — | **Write path phase 2**: routing RL + distilled judge + edge governance | 🟡 loop GPU-validated (smoke); escalation warm-start → full run next |
 
 ---
 
@@ -131,6 +138,11 @@ python -m kgat.eval.extractor_cascade --model-id Qwen/Qwen3-0.6B \
 # Distill the teacher's per-edge critic into the 150M reward judge:
 python -m kgat.data.judge_export --export exports/judge.jsonl --out data/judge
 python -m kgat.train.judge train=judge model=crossencoder-modernbert
+
+# Phase 2: GRPO over per-chunk {skip | extract | escalate} routing
+# (warm-starts from the SFT extractor adapter; judge = gates + distilled critic):
+python -m kgat.train.grpo_routing train=grpo_routing model=qwen3-0.6b \
+    train.grpo_routing.judge=outputs/judges/crossencoder-modernbert
 ```
 
 On Colab, open `notebooks/colab_kgat.ipynb` — T4 covers mining/SFT/eval; use an
@@ -182,7 +194,8 @@ src/kgat/
                   write: EdgePolicy chain + WriteCertificate + governed_commit
   traversal/      engine (main loop) + budget ledger
   train/          reward, mining, sft, grpo (read path);
-                  sft_extractor, backfill_routing, edge_judge, judge (write path)
+                  sft_extractor, backfill_routing, edge_judge, judge,
+                  grpo_routing (write path)
   eval/           metrics, cost, frontier, harness; extractor_cascade (write path)
   baselines/      RoG / GCR / GNN-RAG wrappers — stubs
   utils/          HF loading, JSONL + optional W&B logging, seeding
