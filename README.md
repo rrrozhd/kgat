@@ -45,24 +45,28 @@ open item before a full RL run: the SFT-initialized policy never samples
 extractor's own low-confidence chunks as escalation targets.
 
 **Read path:** the full chain — mine → SFT → trie-constrained decode → GRPO —
-is GPU-validated. On FinKG, SFT lifts the 0.6B controller from 0.16 to 0.82 Hit
-with depth-adaptive search; GRPO (Dr. GRPO defaults + regret cost + exact
-potential shaping) reaches 0.89 at unchanged cost.
+is GPU-validated. On the synthetic FinKG testbed (templated questions; 90-question
+dev split), SFT lifts the 0.6B controller from 0.16 to 0.82 Hit with
+depth-adaptive search; GRPO (Dr. GRPO defaults + regret cost + exact potential
+shaping) reaches 0.89. The λ sweep produced no cost separation on this KG — the
+trained policy already operates at near-oracle depth, so FinKG's cost/quality
+frontier degenerates to a point; demonstrating a real frontier awaits
+distractor-dense data (WebQSP/CWQ).
 
 | Milestone | What | State |
 |-----------|------|-------|
-| M0 | Skeleton, schemas, ABCs, `DummyController`, pytest green | ✅ implemented |
-| M1 | Data + eval foundation (metrics, cost, frontier, harness) | ✅ implemented |
-| M2 | Baseline reproduction harness (RoG / GCR / GNN-RAG wrappers) | 🟡 stubbed (needs verified official repos + published numbers) |
-| M3 | Trajectory mining (BFS oracle → engine replay → SFT JSONL) | ✅ implemented + tested |
-| M4 | Decoder controller + trie-constrained decoding + LoRA/QLoRA SFT | ✅ GPU-validated (FinKG + WebQSP mining) |
-| M5 | Trajectory-level GRPO + λ frontier | ✅ GPU-validated (λ + lr sweeps) |
-| M6 | Size sweep + cross-encoder floor | 🟡 cross-encoder now trained as the write-path judge; controller floor pending |
-| M7 | Arch B / Arch C arms | ⏳ stub (`gnn_proposer`; dynamic trie shares `constrained_decoding`) |
-| M8 | Governance layer + audit + overhead measurement | 🟡 read + write policies/certificates implemented & wired; overhead study pending |
-| M9 | Ablations, transfer KG, write-up | ⏳ future |
-| — | **Write path**: extractor SFT + confidence cascade + frontier | ✅ 4 measured rounds on real data |
-| — | **Write path phase 2**: routing RL + distilled judge + edge governance | 🟡 loop GPU-validated (smoke); escalation warm-start → full run next |
+| M0 | Skeleton, schemas, ABCs, `DummyController`, pytest green | implemented |
+| M1 | Data + eval foundation (metrics, cost, frontier, harness) | implemented |
+| M2 | Baseline reproduction harness (RoG / GCR / GNN-RAG wrappers) | stubbed (needs verified official repos + published numbers) |
+| M3 | Trajectory mining (BFS oracle → engine replay → SFT JSONL) | implemented + tested |
+| M4 | Decoder controller + trie-constrained decoding + LoRA/QLoRA SFT | GPU-validated (FinKG + WebQSP mining) |
+| M5 | Trajectory-level GRPO + λ frontier | GPU-validated (λ + lr sweeps) |
+| M6 | Size sweep + cross-encoder floor | cross-encoder now trained as the write-path judge; controller floor pending |
+| M7 | Arch B / Arch C arms | stub (`gnn_proposer`; dynamic trie shares `constrained_decoding`) |
+| M8 | Governance layer + audit + overhead measurement | read + write policies/certificates implemented & wired; overhead study pending |
+| M9 | Ablations, transfer KG, write-up | future |
+| — | **Write path**: extractor SFT + confidence cascade + frontier | 4 measured rounds on real data |
+| — | **Write path phase 2**: routing RL + distilled judge + edge governance | loop GPU-validated (smoke); escalation warm-start → full run next |
 
 ---
 
@@ -147,8 +151,8 @@ python -m kgat.train.grpo_routing train=grpo_routing model=qwen3-0.6b \
 ```
 
 On Colab, open `notebooks/colab_kgat.ipynb` — T4 covers mining/SFT/eval; use an
-A100 for the full GRPO sweep. **Note:** GRPO is implemented but not yet validated
-on a real GPU run; smoke-test (`train.grpo.max_questions=32`) before a long sweep.
+A100 for the full GRPO sweep. **Note:** smoke-test (`train.grpo.max_questions=32`)
+before committing to a long sweep.
 
 Multirun sweeps (the reason we use Hydra):
 
@@ -201,7 +205,7 @@ src/kgat/
   baselines/      RoG / GCR / GNN-RAG wrappers — stubs
   utils/          HF loading, JSONL + optional W&B logging, seeding
 scripts/          download_data / run_sft / run_grpo / run_backfill_pilot / eval_frontier / sweep
-tests/            pytest suite (152 tests; every module above with pure-python coverage)
+tests/            pytest suite (149 tests; every module above with pure-python coverage)
 ```
 
 ## Design notes (deviations from the brief, and why)
