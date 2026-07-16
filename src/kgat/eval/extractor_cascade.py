@@ -98,6 +98,59 @@ def cascade_rows(outcomes: list[ExtractionOutcome], taus: list[float]) -> list[d
     return rows
 
 
+def cascade_rows_2d(
+    outcomes: list[ExtractionOutcome],
+    taus_none: list[float],
+    taus_extract: list[float],
+) -> list[dict]:
+    """Per-route threshold sweep: separate bars for NONE decodes vs extractions.
+
+    ``exp(mean logprob)`` is computed over very different decision counts for a
+    NONE decode (~1 step) vs a multi-triple one (~15), so a single tau conflates
+    output length with uncertainty. Escalate iff ``confidence < tau_none`` when
+    the extractor predicted nothing, else iff ``confidence < tau_extract``.
+    Returns one row per (tau_none, tau_extract) with the same metric fields as
+    :func:`cascade_rows`.
+    """
+    rows: list[dict] = []
+    for tn in taus_none:
+        for te in taus_extract:
+            items: list[tuple[set[Triple], set[Triple]]] = []
+            escalated = 0
+            for o in outcomes:
+                tau = tn if not o.pred else te
+                escalate = o.confidence < tau
+                escalated += int(escalate)
+                pred = set(o.gold) if escalate else set(o.pred)
+                items.append((pred, set(o.gold)))
+            metrics = micro_prf(items)
+            rows.append(
+                {
+                    "tau_none": tn,
+                    "tau_extract": te,
+                    "escalation_rate": escalated / len(outcomes) if outcomes else 0.0,
+                    **metrics,
+                }
+            )
+    return rows
+
+
+def pareto_front(
+    rows: list[dict], *, cost_key: str = "escalation_rate", quality_key: str = "recall"
+) -> list[dict]:
+    """Upper envelope: rows not dominated by any cheaper-or-equal, better-or-equal row."""
+    front = [
+        r
+        for r in rows
+        if not any(
+            (o[cost_key] <= r[cost_key] and o[quality_key] > r[quality_key])
+            or (o[cost_key] < r[cost_key] and o[quality_key] >= r[quality_key])
+            for o in rows
+        )
+    ]
+    return sorted(front, key=lambda r: (r[cost_key], -r[quality_key]))
+
+
 def write_summaries(rows: list[dict], out_dir: str | Path, *, n_questions: int) -> list[Path]:
     """Write one harness-format ``*.summary.json`` per tau (frontier input)."""
     out_dir = Path(out_dir)
@@ -281,6 +334,8 @@ __all__ = [
     "ExtractionOutcome",
     "micro_prf",
     "cascade_rows",
+    "cascade_rows_2d",
+    "pareto_front",
     "write_summaries",
     "headline",
     "decode_pairs",

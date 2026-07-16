@@ -77,6 +77,32 @@ def test_headline_picks_cheapest_gate_pass():
     assert headline([r for r in rows if r["recall"] < 0.8], min_recall=0.8) is None
 
 
+def test_cascade_rows_2d_and_pareto():
+    from kgat.eval.extractor_cascade import cascade_rows_2d, pareto_front
+
+    rows = cascade_rows_2d(OUTCOMES, taus_none=[0.0, 1.05], taus_extract=[0.0, 0.7])
+    assert len(rows) == 4
+    # (0,0): nothing escalates — matches the uniform tau=0 row.
+    r00 = next(r for r in rows if r["tau_none"] == 0.0 and r["tau_extract"] == 0.0)
+    assert r00["escalation_rate"] == 0.0 and r00["recall"] == 1 / 3
+    # Escalating only low-confidence EXTRACTIONS rescues the wrong-relation
+    # chunk without paying for NONE decodes.
+    r_ext = next(r for r in rows if r["tau_none"] == 0.0 and r["tau_extract"] == 0.7)
+    assert r_ext["escalation_rate"] == 1 / 4  # only the conf-0.60 extraction
+    assert r_ext["recall"] == 2 / 3
+    # tau_none=1.05 escalates every NONE decode (incl. the wrong empty pred).
+    r_none = next(r for r in rows if r["tau_none"] == 1.05 and r["tau_extract"] == 0.0)
+    assert r_none["escalation_rate"] == 2 / 4  # the empty-pred miss + correct NONE
+    assert r_none["recall"] == 2 / 3
+
+    front = pareto_front(rows)
+    costs = [r["escalation_rate"] for r in front]
+    quals = [r["recall"] for r in front]
+    assert costs == sorted(costs)
+    assert quals == sorted(quals)  # envelope is monotone
+    assert r00 in front  # cheapest point always survives
+
+
 def test_summaries_feed_the_standard_frontier(tmp_path):
     rows = cascade_rows(OUTCOMES, [0.0, 0.4, 1.05])
     paths = write_summaries(rows, tmp_path, n_questions=len(OUTCOMES))
