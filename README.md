@@ -1,23 +1,25 @@
-# kgat — Budget-Adaptive, Governed KG Traversal & Construction
+# edgewright — Governed, Budget-Adaptive KG Construction & Traversal
 
 Small constrained models + cost-aware policies, on **both sides** of a knowledge
 graph:
 
-- **Read path (traversal KGQA):** a ~0.6B model acts as a traversal policy —
-  given a question and the current frontier it picks the next relation to expand
-  or emits `STOP`, under a token-trie constraint that makes off-graph actions
-  impossible. A swappable synthesizer turns retrieved paths into answers.
-- **Write path (graph building / backfill):** the same machinery inverted — a
-  grammar-constrained extractor reads document chunks and emits schema-valid
-  triples or `NONE`, escalating only its low-confidence chunks to a big-LLM
-  teacher pipeline. "Skip this chunk" plays the role of `STOP`.
+- **Write path (graph building / backfill):** a grammar-constrained ~0.6B
+  extractor reads document chunks and emits schema-valid triples or `NONE`,
+  escalating only its low-confidence chunks to a big-LLM teacher pipeline.
+- **Read path (traversal KGQA):** the same machinery inverted — the small model
+  acts as a traversal policy: given a question and the current frontier it picks
+  the next relation to expand or emits `STOP` (the counterpart of the write
+  path's "skip this chunk"), under a token-trie constraint that makes off-graph
+  actions impossible. A swappable synthesizer turns retrieved paths into answers.
 
 Both paths are wrapped in a **governance layer** (per-hop / per-edge policies,
 audit certificates, fail-closed provenance) and evaluated the same way: a
-**cost/quality frontier** traced by a cost-penalized reward. The contribution is
-not "a small model can do X" — it is budget-adaptive behavior, measured as
-quality-per-dollar, with auditability as a first-class property. Model size is a
-*swept variable*, not a fixed choice.
+**cost/quality frontier** with an explicit cost axis (escalation rate on the
+write path; hops/LLM calls on the read path). The demonstrated frontier is
+traced by a confidence threshold; tracing it with a cost-penalized RL reward is
+the active phase-2 work. The contribution is not "a small model can do X" — it
+is budget-adaptive behavior, measured as quality-per-dollar, with auditability
+as a first-class property. Model size is a *swept variable*, not a fixed choice.
 
 ---
 
@@ -184,6 +186,9 @@ per line, `*.jsonl`):
 > the actual release before running M2.
 
 ## Repository layout
+
+The Python package keeps the historical import name `kgat` (`import kgat`);
+only the project/distribution name changed to `edgewright`.
 
 ```
 configs/          Hydra config groups (model / dataset / train / experiment / controller / synth)

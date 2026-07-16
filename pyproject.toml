@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "kgat"
-version = "0.0.15"
-description = "Budget-adaptive, governed knowledge-graph traversal for multi-hop KGQA"
+name = "edgewright"
+version = "0.0.15.1"
+description = "Governed, budget-adaptive knowledge-graph construction and traversal with small constrained models"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "kgat authors" }]
-keywords = ["kgqa", "knowledge-graph", "rl", "traversal", "governance"]
+authors = [{ name = "edgewright authors" }]
+keywords = ["knowledge-graph", "information-extraction", "kgqa", "rl", "governance"]
 
 # Core runtime deps. Deliberately excludes torch/transformers so that the
 # foundation (schemas, graph, traversal, eval) installs and tests WITHOUT any
@@ -58,7 +58,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kgat/kgat"
+Homepage = "https://github.com/rrrozhd/edgewright"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kgat"]
