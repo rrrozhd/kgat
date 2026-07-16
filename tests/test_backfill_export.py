@@ -201,6 +201,75 @@ def test_load_export_groups_rows_by_evidence(tmp_path):
     assert negative.confidence is None
 
 
+def test_load_export_splits_gold_and_uncertain_at_the_floor(tmp_path):
+    rows = [
+        {
+            "evidence_text": "We sell to A. We may also work with B.",
+            "filer": "Filer Co",
+            "relationship_type": "supplier",
+            "target": "A",
+            "confidence": 0.9,
+            "accession_number": "acc-1",
+            "chunk_id": "ch-1",
+            "chunk_text": "We sell to A. We may also work with B.",
+            "item_key": "Item 1",
+            "company_id": "co-1",
+        },
+        {  # sub-floor edge on the SAME chunk -> uncertain, not gold, not absent
+            "evidence_text": "We may also work with B.",
+            "filer": "Filer Co",
+            "relationship_type": "partner",
+            "target": "B",
+            "confidence": 0.55,
+            "accession_number": "acc-1",
+            "chunk_id": "ch-1",
+            "chunk_text": "We sell to A. We may also work with B.",
+            "item_key": "Item 1",
+            "company_id": "co-1",
+        },
+    ]
+    path = tmp_path / "v3.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    (pair,) = load_export_jsonl(path, confidence_floor=0.7)
+    assert pair.triples == (("supplier", "A"),)
+    assert pair.uncertain == (("partner", "B"),)
+    assert pair.confidence == 0.9  # min over GOLD rows only
+    # Roundtrip keeps the uncertain set.
+    write_pairs_jsonl([pair], tmp_path / "pairs.jsonl")
+    assert read_pairs_jsonl(tmp_path / "pairs.jsonl") == [pair]
+
+
+def test_uncertain_edges_are_masked_from_reward_and_cascade():
+    from kgat.eval.extractor_cascade import ExtractionOutcome, cascade_rows
+    from kgat.train.backfill_routing import ChunkDecision, per_chunk_rewards, routing_reward
+
+    pair = ExtractionPair(
+        text="t",
+        filer="F",
+        triples=(("supplier", "A"),),
+        filing="acc-1",
+        uncertain=(("partner", "B"),),
+    )
+    decision = ChunkDecision(
+        route="extract",
+        triples=(("supplier", "A"), ("partner", "B")),
+        gen_tokens=10,
+        logprob=-1.0,
+        n_choices=3,
+    )
+    r = routing_reward([pair], [decision], lam=0.0)
+    assert r.precision == 1.0  # B is masked: A alone counts, and it is gold
+    assert r.n_emitted == 1
+    per_chunk, _ = per_chunk_rewards([pair], [decision], lam=0.0)
+    assert per_chunk[0] == 1.0  # precision_i and recall_i both unaffected by B
+
+    outcome = ExtractionOutcome(
+        gold=pair.triples, pred=decision.triples, confidence=0.9, uncertain=pair.uncertain
+    )
+    (row,) = cascade_rows([outcome], [0.0])
+    assert row["precision"] == 1.0 and row["recall"] == 1.0  # no FP charged for B
+
+
 def test_load_export_rejects_unknown_type(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text(

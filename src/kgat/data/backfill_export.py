@@ -24,10 +24,13 @@ per extracted edge, joined to its CHUNK so training sees deployment-shaped input
     FROM company_relationships cr
     JOIN processed_filings pf ON cr.filing_id = pf.id
     JOIN filing_chunks fc ON cr.chunk_id = fc.id
-    WHERE cr.confidence >= 0.7           -- teacher-quality floor; tune
-      AND cr.relationship_type IN        -- DB has legacy types (e.g. 'holds');
+    WHERE cr.relationship_type IN        -- DB has legacy types (e.g. 'holds');
           ('supplier','customer','competitor','partner',
            'acquirer','subsidiary','investor');
+    -- NOTE (v3): export ALL confidences; the teacher-quality floor is applied
+    -- loader-side. Sub-floor edges become the pair's UNCERTAIN set: excluded
+    -- from gold, but masked from false-positive accounting — a chunk with a
+    -- 0.9 edge and a 0.6 edge must not teach the model the 0.6 edge is ABSENT.
 
 Negatives — chunks from the same filings with no extracted edges (the skip class;
 ``relationship_type``/``target``/``evidence_text`` NULL)::
@@ -121,6 +124,9 @@ class ExtractionPair:
     company: str | None = None
     item_key: str | None = None
     chunk: str | None = None  # alphina chunk_id — the write certificate's provenance key
+    # Sub-floor teacher edges: not gold (too unreliable to imitate), but NOT
+    # absent either — reward/eval mask them from false-positive accounting.
+    uncertain: tuple[tuple[str, str], ...] = ()
 
     def to_record(self) -> dict:
         return {
@@ -132,19 +138,22 @@ class ExtractionPair:
             "company": self.company,
             "item_key": self.item_key,
             "chunk": self.chunk,
+            "uncertain": [list(t) for t in self.uncertain],
         }
 
 
-def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
+def load_export_jsonl(path: str | Path, *, confidence_floor: float = 0.7) -> list[ExtractionPair]:
     """Load an alphina export (docstring SQL) into grouped ``ExtractionPair``s.
 
     Rows with NULL/absent ``relationship_type`` are negatives. Rows sharing
     (accession_number, chunk_id) — or (accession_number, evidence_text) for v1
     exports without chunk columns — merge into one multi-triple pair; the pair's
     text is the full ``chunk_text`` when exported (deployment-shaped input),
-    falling back to ``evidence_text``; its confidence is the MIN over its rows
-    (weakest teacher edge bounds the example). Raises ``ValueError`` on
-    relationship types outside the seven-type taxonomy.
+    falling back to ``evidence_text``; its confidence is the MIN over its GOLD
+    rows (weakest teacher edge bounds the example). Edges below
+    ``confidence_floor`` land in the pair's ``uncertain`` set instead of gold
+    (v1 exports pre-filtered at the floor, so their uncertain sets are empty).
+    Raises ``ValueError`` on relationship types outside the seven-type taxonomy.
     """
     grouped: dict[tuple[str, str], dict] = {}
     with Path(path).open("r", encoding="utf-8") as fh:
@@ -166,6 +175,7 @@ def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
                     "text": text,
                     "filer": filer,
                     "triples": [],
+                    "uncertain": [],
                     "confidence": None,
                     "company": row.get("company_id"),
                     "item_key": row.get("item_key"),
@@ -185,11 +195,15 @@ def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
                     f"{RELATIONSHIP_TYPES}"
                 )
             triple = (str(rel), str(row["target"]))
+            conf = row.get("confidence")
+            conf = float(conf) if conf is not None else None
+            if conf is not None and conf < confidence_floor:
+                if triple not in entry["uncertain"]:
+                    entry["uncertain"].append(triple)
+                continue
             if triple not in entry["triples"]:
                 entry["triples"].append(triple)
-            conf = row.get("confidence")
             if conf is not None:
-                conf = float(conf)
                 entry["confidence"] = (
                     conf if entry["confidence"] is None else min(entry["confidence"], conf)
                 )
@@ -203,6 +217,7 @@ def load_export_jsonl(path: str | Path) -> list[ExtractionPair]:
             company=str(e["company"]) if e["company"] is not None else None,
             item_key=e["item_key"],
             chunk=e["chunk"],
+            uncertain=tuple(t for t in e["uncertain"] if t not in e["triples"]),
         )
         for (filing, _), e in grouped.items()
     ]
@@ -431,6 +446,9 @@ def read_pairs_jsonl(path: str | Path, max_examples: int | None = None) -> list[
                     company=row.get("company"),
                     item_key=row.get("item_key"),
                     chunk=row.get("chunk"),
+                    uncertain=tuple(
+                        (str(r), str(t)) for r, t in row.get("uncertain") or ()
+                    ),
                 )
             )
             if max_examples is not None and len(pairs) >= max_examples:

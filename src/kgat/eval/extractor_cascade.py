@@ -40,11 +40,18 @@ Triple = tuple[str, str]
 
 @dataclass(frozen=True)
 class ExtractionOutcome:
-    """One evaluated chunk: teacher triples, small-model triples, its confidence."""
+    """One evaluated chunk: teacher triples, small-model triples, its confidence.
+
+    ``uncertain`` carries the chunk's sub-floor teacher edges: predictions that
+    match them are removed before scoring (they cannot be true positives — not
+    gold — but counting them as FALSE positives would punish the model for
+    agreeing with a low-confidence teacher).
+    """
 
     gold: tuple[Triple, ...]
     pred: tuple[Triple, ...]
     confidence: float
+    uncertain: tuple[Triple, ...] = ()
 
 
 def micro_prf(items: list[tuple[set[Triple], set[Triple]]]) -> dict[str, float]:
@@ -85,7 +92,7 @@ def cascade_rows(outcomes: list[ExtractionOutcome], taus: list[float]) -> list[d
         for o in outcomes:
             escalate = o.confidence < tau
             escalated += int(escalate)
-            pred = set(o.gold) if escalate else set(o.pred)
+            pred = set(o.gold) if escalate else set(o.pred) - set(o.uncertain)
             items.append((pred, set(o.gold)))
         metrics = micro_prf(items)
         rows.append(
@@ -121,7 +128,7 @@ def cascade_rows_2d(
                 tau = tn if not o.pred else te
                 escalate = o.confidence < tau
                 escalated += int(escalate)
-                pred = set(o.gold) if escalate else set(o.pred)
+                pred = set(o.gold) if escalate else set(o.pred) - set(o.uncertain)
                 items.append((pred, set(o.gold)))
             metrics = micro_prf(items)
             rows.append(
@@ -243,6 +250,7 @@ def decode_pairs(
                 gold=norm_triples(pair.triples),
                 pred=norm_triples(result.triples),
                 confidence=result.confidence,
+                uncertain=norm_triples(pair.uncertain),
             )
         )
         if (i + 1) % 25 == 0:

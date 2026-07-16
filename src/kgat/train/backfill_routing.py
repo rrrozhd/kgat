@@ -195,7 +195,10 @@ def routing_reward(
             raise ValueError(f"unknown route {decision.route!r}")
 
         gold_recovered += len(set(decision.triples) & gold)
+        uncertain = set(pair.uncertain)
         for relation, target in decision.triples:
+            if (relation, target) in uncertain:
+                continue  # sub-floor teacher edge: neither rewarded nor punished
             n_emitted += 1
             if judge is None:
                 score = 1.0 if (relation, target) in gold else 0.0
@@ -269,8 +272,11 @@ def per_chunk_rewards(
         elif decision.route == ROUTE_SKIP:
             precision_i, recall_i = 1.0, (0.0 if gold else 1.0)
         elif decision.route == ROUTE_EXTRACT:
+            uncertain = set(pair.uncertain)
             scores = []
             for relation, target in decision.triples:
+                if (relation, target) in uncertain:
+                    continue  # sub-floor teacher edge: masked from precision
                 if judge is None:
                     scores.append(1.0 if (relation, target) in gold else 0.0)
                 else:
