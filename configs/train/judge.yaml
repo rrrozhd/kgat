@@ -8,6 +8,8 @@ judge:
   output_dir: outputs/judges/${model.name}
   max_examples: null          # cap for smoke runs
   max_dev: 5000
+  direction_negatives: false  # v3: mint wrong-direction rejects from confident accepts
+  dir_neg_min_faith: 0.5      #     source-accept faithfulness floor for minting
   learning_rate: 3.0e-5
   epochs: 1
   batch_size: 16

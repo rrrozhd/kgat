@@ -24,7 +24,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from kgat.data.judge_export import JudgeExample, read_judge_jsonl, render_judge_input
+from kgat.data.judge_export import (
+    JudgeExample,
+    mint_direction_negatives,
+    read_judge_jsonl,
+    render_judge_input,
+)
 from kgat.utils.hf import require_ml
 
 
@@ -114,6 +119,19 @@ def run_judge_training(cfg: Any) -> Path:
         data_dir / "train.jsonl", max_examples=jcfg.get("max_examples")
     )
     dev_examples = read_judge_jsonl(data_dir / "dev.jsonl", max_examples=jcfg.get("max_dev"))
+
+    # Direction-flipped hard negatives (judge v3): mint wrong-direction rejects from
+    # confident accepts to fix the weak reject-agreement axis. TRAIN split ONLY —
+    # dev stays a clean held-out mirror of the real critic distribution.
+    n_dir_neg = 0
+    if bool(jcfg.get("direction_negatives", False)):
+        negs = mint_direction_negatives(
+            train_examples,
+            min_source_faithfulness=float(jcfg.get("dir_neg_min_faith", 0.5)),
+        )
+        train_examples = train_examples + negs
+        n_dir_neg = len(negs)
+
     output_dir = resolve_path(jcfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,8 +147,8 @@ def run_judge_training(cfg: Any) -> Path:
     dev_enc = [encode_judge_example(e, tokenizer, max_seq_len=max_seq_len) for e in dev_examples]
     n_accept = sum(1 for e in train_examples if e.verdict == "accept")
     print(
-        f"judge: {len(train_enc)} train ({n_accept} accept), {len(dev_enc)} dev, "
-        f"base={cfg.model.hf_id}"
+        f"judge: {len(train_enc)} train ({n_accept} accept, +{n_dir_neg} direction-neg), "
+        f"{len(dev_enc)} dev, base={cfg.model.hf_id}"
     )
 
     pad_id = tokenizer.pad_token_id

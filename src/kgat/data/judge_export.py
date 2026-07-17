@@ -91,6 +91,81 @@ def render_judge_input(filer: str, relation: str, target: str, text: str) -> str
     )
 
 
+# Directional relation pairs whose swap is a genuine error (not just a different
+# relation): the filer selling-to vs buying-from (supplier↔customer), and owning vs
+# owned-by (acquirer↔subsidiary). partner/competitor/investor have no such
+# same-target inverse in the taxonomy, so they are excluded.
+DIRECTION_FLIP = {
+    "supplier": "customer",
+    "customer": "supplier",
+    "acquirer": "subsidiary",
+    "subsidiary": "acquirer",
+}
+
+
+def _claim_key(filer: str, relation: str, target: str) -> tuple[str, str, str]:
+    return (filer.strip().lower(), relation, target.strip().lower())
+
+
+def mint_direction_negatives(
+    examples: list[JudgeExample],
+    *,
+    min_source_faithfulness: float = 0.5,
+    low_faithfulness: float = 0.0,
+) -> list[JudgeExample]:
+    """Mint direction-flipped hard negatives from ACCEPTED directional edges.
+
+    Weak-supervision contrastive negatives (LITERATURE-ALIGNMENT §2): for each
+    confidently-accepted ``(filer, r, target)`` with ``r`` in ``DIRECTION_FLIP``,
+    emit a ``reject`` for ``(filer, flip(r), target)`` on the SAME chunk — the
+    wrong-direction claim, false by that evidence. This targets the judge's weak
+    reject-agreement axis (64% at 0.65) and the supplier/subsidiary flip buckets.
+
+    Guards (a synthetic negative must be a RELIABLE reject):
+      - source must be ``accept`` with faithfulness ≥ ``min_source_faithfulness``;
+      - skip if the flipped claim is itself accepted anywhere (genuinely
+        bidirectional relationships — e.g. two firms that both supply and buy);
+      - skip if that exact (chunk, flipped-claim) already exists in the data;
+      - dedup within the minted batch.
+
+    Returns ONLY the new negatives (each inherits its source's ``filing`` so a
+    filing-disjoint split keeps them with their positive). Apply to the TRAIN
+    split only — minting over dev/test would contaminate the eval.
+    """
+    accepted = {
+        _claim_key(e.filer, e.relation, e.target) for e in examples if e.verdict == "accept"
+    }
+    existing = {(e.text, _claim_key(e.filer, e.relation, e.target)) for e in examples}
+    low = max(0.0, min(1.0, low_faithfulness))
+    seen: set[tuple[str, tuple[str, str, str]]] = set()
+    out: list[JudgeExample] = []
+    for e in examples:
+        if e.verdict != "accept" or e.relation not in DIRECTION_FLIP:
+            continue
+        if e.faithfulness < min_source_faithfulness:
+            continue
+        flip = DIRECTION_FLIP[e.relation]
+        fk = _claim_key(e.filer, flip, e.target)
+        if fk in accepted:  # the reverse direction is genuinely asserted somewhere
+            continue
+        marker = (e.text, fk)
+        if marker in existing or marker in seen:
+            continue
+        seen.add(marker)
+        out.append(
+            JudgeExample(
+                text=e.text,
+                filer=e.filer,
+                relation=flip,
+                target=e.target,
+                verdict="reject",
+                faithfulness=low,
+                filing=e.filing,
+            )
+        )
+    return out
+
+
 def load_judge_export_jsonl(path: str | Path) -> tuple[list[JudgeExample], int]:
     """Load export rows into ``JudgeExample``s. Returns ``(examples, n_skipped)``.
 
@@ -219,6 +294,8 @@ if __name__ == "__main__":
 __all__ = [
     "JudgeExample",
     "render_judge_input",
+    "DIRECTION_FLIP",
+    "mint_direction_negatives",
     "load_judge_export_jsonl",
     "split_judge_examples",
     "export_judge_dataset",
