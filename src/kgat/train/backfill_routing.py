@@ -158,10 +158,20 @@ def routing_reward(
       cost ≈ the fraction of chunks escalated — λ reads directly against the
       frontier's escalation axis.
 
-    ``escalate-everything`` scores perfect recall at maximum cost;
-    ``skip-everything`` is free but scores recall 0 on any filing with edges —
-    λ within (0, min(precision_weight, recall_weight)) keeps both degenerate
-    policies dominated, same guard logic as ``kgat.train.reward``. A judge that
+    ``escalate-everything`` scores perfect recall at maximum cost AND vacuous
+    perfect precision (it claims nothing), so it is a full score minus λ·cost;
+    ``skip-everything`` is free but scores recall 0 on any filing with edges.
+    **λ must be large enough or escalate-everything simply wins.** The crossover is
+
+        λ* = (1 − (precision_weight·P + recall_weight·R)) / (1 − cost_of_extracting)
+
+    where P/R are the POLICY'S OWN extraction quality — so λ* moves with model
+    quality and must be re-derived per policy, not assumed. Measured 2026-07-18
+    with the markers extractor (P=.651, R=.611, cost≈.1): λ* ≈ **0.41**, and
+    skip-everything overtakes extraction above λ ≈ 1.31. Any λ below λ* yields a
+    degenerate 100%-escalation policy. (An earlier version of this docstring
+    claimed λ ∈ (0, min(w_p, w_r)) sufficed — that is FALSE whenever
+    w_p·P + w_r·R < 1 − min(w_p, w_r), which holds for every real extractor here.) A judge that
     can certify novel edges (the distilled critic) is what lets total reward
     exceed the pure-imitation ceiling: precision then pays for true edges the
     teacher never had, while recall keeps the teacher's edges from being

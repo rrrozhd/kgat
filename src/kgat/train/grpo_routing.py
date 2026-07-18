@@ -46,6 +46,8 @@ from kgat.controller.prompting import format_extraction_prompt
 from kgat.data.backfill_export import ExtractionPair, read_pairs_jsonl
 from kgat.train.backfill_routing import (
     ESCALATE_LABEL,
+    ROUTE_EXTRACT,
+    ROUTE_SKIP,
     decision_from_result,
     per_chunk_rewards,
     routing_reward,
@@ -109,6 +111,11 @@ class EpisodeRollout:
     chunks: list[tuple[list[int], tuple[int, ...], float, TripleGrammar]]
     reward: float  # macro mean of chunk_rewards (logging + group skip check)
     n_escalated: int
+    # Route census — the degenerate-policy tripwire. escalate-everything and
+    # skip-everything are BOTH reward attractors (see routing_reward's λ* note);
+    # logging only escalation would leave a skip-collapse invisible.
+    n_skip: int = 0
+    n_extract: int = 0
     chunk_rewards: list[float] = field(default_factory=list)
     chunk_advantages: list[float] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
@@ -164,6 +171,8 @@ def rollout_episode(
         chunks=chunk_records,
         reward=mean_r,
         n_escalated=r.n_escalated,
+        n_skip=sum(1 for d in decisions if d.route == ROUTE_SKIP),
+        n_extract=sum(1 for d in decisions if d.route == ROUTE_EXTRACT),
         chunk_rewards=chunk_rs,
         metrics={"precision": r.precision, "recall": r.recall, "cost": r.normalized_cost},
     )
@@ -439,6 +448,8 @@ def run_grpo_routing(cfg: Any) -> Path:
 
             mean_reward = sum(r.reward for r in rollouts) / len(rollouts)
             mean_esc = sum(r.n_escalated for r in rollouts) / len(rollouts)
+            mean_skip = sum(r.n_skip for r in rollouts) / len(rollouts)
+            mean_extract = sum(r.n_extract for r in rollouts) / len(rollouts)
             mean_prec = sum(r.metrics["precision"] for r in rollouts) / len(rollouts)
             mean_rec = sum(r.metrics["recall"] for r in rollouts) / len(rollouts)
             record = {
@@ -449,6 +460,10 @@ def run_grpo_routing(cfg: Any) -> Path:
                 "mean_precision": mean_prec,
                 "mean_recall": mean_rec,
                 "mean_escalated": mean_esc,
+                # degenerate-policy tripwires: escalate-all and skip-all are both
+                # reward attractors; watch these collapse toward n_chunks.
+                "mean_skip": mean_skip,
+                "mean_extract": mean_extract,
                 "loss": batch_loss / len(rollouts),
                 "lam": float(g.lam),
             }
@@ -462,8 +477,28 @@ def run_grpo_routing(cfg: Any) -> Path:
             if updates % int(g.get("save_every", 20)) == 0:
                 model.save_pretrained(str(output_dir))
 
-    model.save_pretrained(str(output_dir))
+    # Only the trained adapter — a KL run also holds a frozen "ref" copy, which
+    # would otherwise be written alongside and read back as a checkpoint.
+    save_kw = {"selected_adapters": ["default"]} if can_kl else {}
+    model.save_pretrained(str(output_dir), **save_kw)
     tokenizer.save_pretrained(str(output_dir))
+    # Stamp the prompt contract, exactly as sft_extractor/routing_warmup do: the
+    # eval (eval.routing_frontier) self-configures from this file, and without it
+    # it falls back to its CLI default and silently scores a markers-trained
+    # policy on unmarked prompts.
+    (output_dir / "extractor_meta.json").write_text(
+        _json.dumps(
+            {
+                "entity_markers": mark_filer,
+                "targets_mode": targets_mode,
+                "routing_policy": True,
+                "lam": float(g.lam),
+                "init_adapter": str(adapter_path) if adapter_path else None,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     log.close()
     print(f"routing GRPO done: {updates} updates; adapter -> {output_dir}")
     return output_dir

@@ -28,7 +28,13 @@ grpo_routing:
   epochs: 1
   learning_rate: 1.0e-5
   temperature: 1.0            # rollout sampling; ratios exact at T=1
-  lam: 0.1
+  # λ must exceed (1 - (w_p*P + w_r*R)) / (1 - cost) or ESCALATE-EVERYTHING wins:
+  # escalating scores R=1.0 (teacher solves it) AND P=1.0 (vacuous — nothing
+  # claimed), so it is a perfect score minus λ·cost. Measured 2026-07-18 with the
+  # markers extractor (P=.651 R=.611): extraction only wins above λ≈0.41, and
+  # skip-everything takes over above λ≈1.31. The old default (0.1) was degenerate.
+  # RE-DERIVE this for your policy's P/R before a sweep — it moves with quality.
+  lam: 0.6
   escalation_cost_tokens: 2000
   # Per-CHUNK cap (sweep-v1 lesson: episode-level caps give lam uneven leverage
   # across filing sizes). Equal to the escalation price, so normalized cost ~=
