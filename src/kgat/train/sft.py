@@ -137,7 +137,15 @@ def fit_lora(
 
     model.save_pretrained(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
-    metrics = {"train_loss": result.training_loss, "n_examples": len(encoded)}
+    # Persist the LOSS CURVE, not just the final scalar. Trainer keeps every logged
+    # step in state.log_history; without saving it the curve exists only in the
+    # pod's stdout and dies with the pod (three runs' curves were lost that way
+    # before this was added). Written next to the adapter so it travels with it.
+    metrics = {
+        "train_loss": result.training_loss,
+        "n_examples": len(encoded),
+        "log_history": getattr(getattr(trainer, "state", None), "log_history", []) or [],
+    }
     (output_dir / "sft_metrics.json").write_text(json.dumps(metrics, indent=2))
     print(f"SFT done: loss={result.training_loss:.4f}; adapter -> {output_dir}")
     return output_dir
