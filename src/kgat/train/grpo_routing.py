@@ -46,6 +46,7 @@ from kgat.controller.prompting import format_extraction_prompt
 from kgat.data.backfill_export import ExtractionPair, read_pairs_jsonl
 from kgat.train.backfill_routing import (
     ESCALATE_LABEL,
+    QUALITY_F1,
     ROUTE_EXTRACT,
     ROUTE_SKIP,
     decision_from_result,
@@ -308,6 +309,7 @@ def run_grpo_routing(cfg: Any) -> Path:
         "escalation_cost_tokens": float(g.escalation_cost_tokens),
         "cost_cap_per_chunk": float(g.cost_cap_per_chunk),
         "precision_weight": float(g.precision_weight),
+        "quality_mode": str(g.get("quality_mode", QUALITY_F1)),
         "recall_weight": float(g.recall_weight),
     }
 
@@ -466,6 +468,7 @@ def run_grpo_routing(cfg: Any) -> Path:
                 "mean_extract": mean_extract,
                 "loss": batch_loss / len(rollouts),
                 "lam": float(g.lam),
+                "quality_mode": reward_kwargs["quality_mode"],
             }
             log.log(record)
             print(
@@ -493,6 +496,7 @@ def run_grpo_routing(cfg: Any) -> Path:
                 "targets_mode": targets_mode,
                 "routing_policy": True,
                 "lam": float(g.lam),
+                "quality_mode": str(g.get("quality_mode", QUALITY_F1)),
                 "init_adapter": str(adapter_path) if adapter_path else None,
             },
             indent=2,

@@ -42,6 +42,13 @@ grpo_routing:
   cost_cap_per_chunk: 2000
   precision_weight: 0.5
   recall_weight: 0.5
+  # How a chunk's precision/recall become one quality score.
+  #   f1          - harmonic mean; 0 when nothing is claimed on a gold chunk.
+  #   weighted_pr - w_p*P + w_r*R. KNOWN HACKABLE: skip/escalate both score
+  #                 precision 1.0 vacuously, so silence banks a free w_p. GRPO
+  #                 exploited exactly this on 2026-07-19 (extraction 20.8% -> 3.2%
+  #                 while reward rose). Kept only to reproduce pre-fix runs.
+  quality_mode: f1
   # KL anchor vs the FROZEN warm-start adapter (not the bare base): keeps RL
   # from forgetting extraction quality. 0 disables.
   kl_coeff: 0.02

@@ -40,6 +40,32 @@ ROUTE_SKIP = "skip"
 ROUTE_EXTRACT = "extract"
 ROUTE_ESCALATE = "escalate"
 
+QUALITY_F1 = "f1"
+QUALITY_WEIGHTED_PR = "weighted_pr"
+
+
+def chunk_quality(precision: float, recall: float, mode: str, w_p: float, w_r: float) -> float:
+    """Combine a chunk's precision and recall into one quality score in [0, 1].
+
+    ``weighted_pr`` (``w_p·P + w_r·R``) is the ORIGINAL objective and is **known
+    hackable**: skipping and escalating both score precision 1.0 vacuously (claim
+    nothing, be wrong about nothing), so on a gold-bearing chunk silence banks a
+    free ``w_p``. Measured 2026-07-19: GRPO drove extraction from 20.8% of chunks
+    to 3.2% while reward, precision and recall all *rose* to ~0.98 — the policy
+    learned to stop doing the work. See ``results/grpo-routing-2026-07-19``.
+
+    ``f1`` is the harmonic mean, which is **0 whenever nothing is claimed on a
+    chunk that has gold edges**. That removes the free-precision floor: silence on
+    a gold chunk now scores 0 rather than ``w_p``, so extraction has to be beaten
+    on merit rather than by abstaining. Kept as a mode rather than a replacement so
+    prior runs stay reproducible.
+    """
+    if mode == QUALITY_WEIGHTED_PR:
+        return w_p * precision + w_r * recall
+    if mode != QUALITY_F1:
+        raise ValueError(f"unknown quality mode {mode!r}")
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
 
 @dataclass(frozen=True)
 class ChunkDecision:
@@ -135,6 +161,7 @@ def routing_reward(
     cost_cap_per_chunk: float = 2000.0,
     precision_weight: float = 0.5,
     recall_weight: float = 0.5,
+    quality_mode: str = QUALITY_F1,
 ) -> RoutingReward:
     """Score one filing episode: judged precision + distant recall − λ·tokens.
 
@@ -221,7 +248,7 @@ def routing_reward(
     recall = gold_recovered / gold_total if gold_total else 1.0
     cap = cost_cap_per_chunk * max(1, len(pairs))
     normalized = max(0.0, min(cost / cap, 1.0))
-    reward = precision_weight * precision + recall_weight * recall - lam * normalized
+    reward = chunk_quality(precision, recall, quality_mode, precision_weight, recall_weight) - lam * normalized
     return RoutingReward(
         reward=reward,
         precision=precision,
@@ -244,6 +271,7 @@ def per_chunk_rewards(
     cost_cap_per_chunk: float = 2000.0,
     precision_weight: float = 0.5,
     recall_weight: float = 0.5,
+    quality_mode: str = QUALITY_F1,
 ) -> tuple[list[float], float]:
     """Per-chunk reward decomposition — exact credit assignment for routing GRPO.
 
@@ -299,15 +327,19 @@ def per_chunk_rewards(
             raise ValueError(f"unknown route {decision.route!r}")
 
         cost_i = max(0.0, min(cost / cost_cap_per_chunk, 1.0))
-        rewards.append(
-            precision_weight * precision_i + recall_weight * recall_i - lam * cost_i
+        quality_i = chunk_quality(
+            precision_i, recall_i, quality_mode, precision_weight, recall_weight
         )
+        rewards.append(quality_i - lam * cost_i)
     mean = sum(rewards) / len(rewards) if rewards else 0.0
     return rewards, mean
 
 
 __all__ = [
     "ESCALATE_LABEL",
+    "QUALITY_F1",
+    "QUALITY_WEIGHTED_PR",
+    "chunk_quality",
     "ROUTE_SKIP",
     "ROUTE_EXTRACT",
     "ROUTE_ESCALATE",

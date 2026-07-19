@@ -8,6 +8,7 @@ from kgat.controller.constrained_decoding import TripleDecodeResult
 from kgat.data.backfill_export import ExtractionPair
 from kgat.train.backfill_routing import (
     ESCALATE_LABEL,
+    QUALITY_WEIGHTED_PR,
     ROUTE_ESCALATE,
     ROUTE_EXTRACT,
     ROUTE_SKIP,
@@ -74,7 +75,17 @@ def test_distant_reward_without_critic():
     assert r.recall == 2 / 3  # A extracted + C escalated; B missed
     assert r.n_escalated == 1
     assert r.cost_tokens == 10 * 3 + 1000
-    assert r.reward == 0.5 * r.precision + 0.5 * r.recall
+    # Default quality is F1 (the weighted sum is hackable — see
+    # test_routing_reward_hack.py); the components above are unchanged.
+    assert r.reward == pytest.approx(
+        2 * r.precision * r.recall / (r.precision + r.recall)
+    )
+
+    old = routing_reward(
+        pairs, decisions, lam=0.0, escalation_cost_tokens=1000, cost_cap_per_chunk=4000,
+        quality_mode=QUALITY_WEIGHTED_PR,
+    )
+    assert old.reward == 0.5 * r.precision + 0.5 * r.recall  # prior runs reproducible
 
 
 def test_judged_precision_overrides_distant():
