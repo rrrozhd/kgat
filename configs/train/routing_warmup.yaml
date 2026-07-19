@@ -6,6 +6,10 @@ routing_warmup:
   data_dir: data/backfill/real-strat-v2
   split: train
   output_dir: outputs/adapters/${model.name}-routing-warmup
+  # Warm-start from an existing extractor adapter instead of the bare base.
+  # null = fresh LoRA (costs ~0.082 F1 of extraction quality; see
+  # docs/results/escalate-ordering-2026-07-19). Must match entity_markers.
+  init_adapter: null
   max_examples: null
   max_triples: 28
   entity_markers: true        # match the markers extractor recipe

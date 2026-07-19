@@ -130,19 +130,46 @@ def run_routing_warmup(cfg: Any) -> Path:
     output_dir = resolve_path(w.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Optionally CONTINUE an existing extractor adapter instead of starting a fresh
+    # LoRA on the bare base. Measured 2026-07-19: training ESCALATE from base costs
+    # ~0.082 F1 of extraction quality (0.549 vs the markers extractor's 0.631,
+    # reproduced across two seeds) — the model spends capacity relearning extraction
+    # it could have inherited. Warm-starting keeps that quality and teaches only the
+    # routing action on top.
+    init_adapter = w.get("init_adapter", None)
+    adapter_path = str(resolve_path(init_adapter)) if init_adapter else None
+
     model, tokenizer, device = load_causal_lm(
         cfg.model.hf_id,
+        adapter_path=adapter_path,
         device=cfg.get("device", "auto"),
         four_bit=w.get("four_bit", "auto"),
         train_mode=True,
         gradient_checkpointing=bool(w.get("gradient_checkpointing", False)),
     )
-    model = attach_lora(
-        model, r=int(w.lora_r), alpha=int(w.lora_alpha), dropout=float(w.lora_dropout)
-    )
+    if adapter_path is None:
+        model = attach_lora(
+            model, r=int(w.lora_r), alpha=int(w.lora_alpha), dropout=float(w.lora_dropout)
+        )
+    else:
+        print(f"routing warmup: continuing adapter {adapter_path}")
     model.print_trainable_parameters()
 
     mark_filer = bool(w.get("entity_markers", False))
+    # A warm start inherits the extractor's PROMPT contract; a mismatch silently
+    # fine-tunes on a shifted distribution (same guard as grpo_routing).
+    if adapter_path is not None:
+        meta_path = Path(adapter_path) / "extractor_meta.json"
+        if meta_path.exists():
+            meta_mark = bool(
+                json.loads(meta_path.read_text(encoding="utf-8")).get("entity_markers", False)
+            )
+            if meta_mark != mark_filer:
+                raise ValueError(
+                    f"entity_markers mismatch: config={mark_filer} but init_adapter "
+                    f"{adapter_path} was trained with entity_markers={meta_mark}. Set "
+                    f"train.routing_warmup.entity_markers={meta_mark} to match."
+                )
     # The ESCALATE sentinel MUST be in the grammar or the target is unencodable.
     grammar = build_triple_grammar(
         vocab["relations"],
@@ -181,6 +208,7 @@ def run_routing_warmup(cfg: Any) -> Path:
                 "targets_mode": "vocab",
                 "routing_warmup": True,
                 "escalate_fraction": round(len(esc_ids) / max(len(pairs), 1), 4),
+                "init_adapter": adapter_path,
             },
             indent=2,
         ),
