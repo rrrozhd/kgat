@@ -37,7 +37,7 @@ timeout 90m python -m kgat.eval.extractor_cascade \
   --split test "${EXTRA_ARGS[@]}" \
   --targets vocab --entity-markers --four-bit false \
   --max-triples 28 --max-prompt-tokens 1024 --device cuda \
-  --loose-match --signals all \
+  --signals all \
   --out-dir "$OUT_DIR" 2>&1 | tee "$LOG"
 RUN_STATUS=${PIPESTATUS[0]}
 set -e

@@ -20,12 +20,12 @@ def test_runner_contract_is_explicit_and_fail_closed():
         "--max-triples 28",
         "--max-prompt-tokens 1024",
         "--device cuda",
-        "--loose-match",
         "--signals all",
         "kgat.eval.agreement_validation write-run-manifest",
     )
     for value in required:
         assert value in text
+    assert "--loose-match" not in text
     assert '[[ "$MODE" == "smoke" || "$MODE" == "full" ]]' in text
     assert "PIPESTATUS[0]" in text
 

@@ -84,7 +84,7 @@ def freeze_confidence_baseline(
         {
             "gold": row.get("gold") or [],
             "pred": row.get("pred") or [],
-            "confidence": row.get("confidence"),
+            "confidence": round(float(row.get("confidence", 1.0)), 12),
         }
         for row in rows
     ]
@@ -658,6 +658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "max_triples": 28,
             "max_prompt_tokens": 1024,
             "truncated": 0,
+            "loose_match": False,
             "legacy_unstructured_contract": True,
             "evidence": [
                 "docs/results/entity-markers-2026-07-17/README.md",
@@ -719,6 +720,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_pairs = baseline.get("hashes", {}).get("pairs")
         if baseline_pairs is not None and baseline_pairs != actual_hashes["test"]:
             identity_failures.append("baseline.hashes.pairs")
+        for name in ("adapter", "vocab"):
+            expected = baseline.get("hashes", {}).get(name)
+            if expected is not None and manifest.get("hashes", {}).get(name) != expected:
+                identity_failures.append(f"baseline.hashes.{name}")
+        for name in ("code_commit", "model_revision"):
+            expected = baseline.get(name)
+            if expected is not None and manifest.get("config", {}).get(name) != expected:
+                identity_failures.append(f"baseline.{name}")
         if identity_failures:
             report["reproduction_failures"] = sorted(
                 set(report["reproduction_failures"] + identity_failures)

@@ -87,7 +87,9 @@ The canonical evaluation uses:
 - closed-vocabulary grammar with the 8,993-target vocabulary;
 - entity markers from the adapter contract;
 - `max_triples=28`;
-- the historical normalization and loose-match accounting;
+- the historical strict, original-case accounting (a canonical CUDA 12.4 smoke
+  proved `--loose-match` changes the persisted triples and cannot reproduce the
+  July 17 artifact);
 - Torch, Transformers, PEFT, CUDA, and driver versions recorded in the manifest;
 - deterministic decoding; and
 - all signals: confidence, agreement, minimum agreement, confidence × agreement,

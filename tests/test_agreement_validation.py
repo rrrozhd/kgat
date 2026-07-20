@@ -71,6 +71,34 @@ def test_freeze_confidence_baseline_records_decisions_quality_and_token_totals()
     assert len(baseline["projection_sha256"]) == 64
 
 
+def test_projection_hash_canonicalizes_sub_ulps_but_not_triples():
+    raw_lines = [b'{"text":"x"}\n']
+    kwargs = {
+        "threshold": 0.85,
+        "input_token_counts": [1],
+        "output_token_counts": [1],
+        "contract": {"max_triples": 28},
+    }
+    baseline = freeze_confidence_baseline(
+        [{"gold": [["r", "Target"]], "pred": [], "confidence": 0.8}],
+        raw_lines,
+        **kwargs,
+    )
+    ulp_variant = freeze_confidence_baseline(
+        [{"gold": [["r", "Target"]], "pred": [], "confidence": 0.8000000000000002}],
+        raw_lines,
+        **kwargs,
+    )
+    triple_variant = freeze_confidence_baseline(
+        [{"gold": [["r", "target"]], "pred": [], "confidence": 0.8}],
+        raw_lines,
+        **kwargs,
+    )
+
+    assert baseline["projection_sha256"] == ulp_variant["projection_sha256"]
+    assert baseline["projection_sha256"] != triple_variant["projection_sha256"]
+
+
 def test_validate_reproduction_enforces_token_tolerance_and_exact_decisions():
     baseline = {
         "decision_sha256": "same",

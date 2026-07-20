@@ -91,7 +91,7 @@ Stage only the new module/tests and commit `feat: add canonical agreement valida
 
 - [ ] **Step 1: Write failing script-contract tests**
 
-Assert the remote wrapper uses `set -Eeuo pipefail`, a 90-minute timeout, the pinned local model snapshot path, and literal flags: `--targets vocab`, `--entity-markers`, `--four-bit false`, `--max-triples 28`, `--max-prompt-tokens 1024`, `--device cuda`, `--loose-match`, and `--signals all`.
+Assert the remote wrapper uses `set -Eeuo pipefail`, a 90-minute timeout, the pinned local model snapshot path, and literal flags: `--targets vocab`, `--entity-markers`, `--four-bit false`, `--max-triples 28`, `--max-prompt-tokens 1024`, `--device cuda`, and `--signals all`. Do not pass `--loose-match`: the canonical CUDA 12.4 smoke proved the frozen July 17 baseline stores strict, original-case triples, while that flag normalizes the persisted outcomes.
 
 - [ ] **Step 2: Implement the remote wrapper**
 
@@ -203,7 +203,7 @@ python -m kgat.eval.extractor_cascade \
   --split test --max-examples 10 \
   --targets vocab --entity-markers --four-bit false \
   --max-triples 28 --max-prompt-tokens 1024 --device cuda \
-  --loose-match --signals all \
+  --signals all \
   --out-dir outputs/backfill/agreement-max28-smoke
 ```
 
