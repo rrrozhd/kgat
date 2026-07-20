@@ -31,9 +31,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from kgat.controller.constrained_decoding import build_triple_grammar, decode_triples
 from kgat.controller.prompting import format_extraction_prompt
@@ -82,6 +86,17 @@ SIGNALS: dict[str, Any] = {
     "conf_x_min_agree": lambda o: o.confidence
     * (1.0 if o.min_agreement is None else o.min_agreement),
 }
+
+
+def configure_determinism(torch_module: Any, *, seed: int = 42) -> None:
+    """Enable the seeded deterministic contract recorded by canonical manifests."""
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch_module.manual_seed(seed)
+    torch_module.cuda.manual_seed_all(seed)
+    torch_module.use_deterministic_algorithms(True)
 
 
 def micro_prf(items: list[tuple[set[Triple], set[Triple]]]) -> dict[str, float]:
@@ -410,7 +425,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    import torch
+
     from kgat.utils.hf import load_causal_lm
+
+    configure_determinism(torch, seed=42)
 
     data_dir = Path(args.data_dir)
     pairs = read_pairs_jsonl(data_dir / f"{args.split}.jsonl", max_examples=args.max_examples)

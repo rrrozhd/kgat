@@ -8,6 +8,7 @@ from kgat.eval.extractor_cascade import (
     SIGNALS,
     ExtractionOutcome,
     cascade_rows,
+    configure_determinism,
     headline,
     micro_prf,
     quantile_taus,
@@ -15,6 +16,31 @@ from kgat.eval.extractor_cascade import (
     write_summaries,
 )
 from kgat.eval.frontier import frontier_dataframe, load_summaries
+
+
+def test_configure_determinism_enables_torch_guards(monkeypatch):
+    calls = []
+
+    class FakeCuda:
+        @staticmethod
+        def manual_seed_all(seed):
+            calls.append(("cuda", seed))
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+        @staticmethod
+        def manual_seed(seed):
+            calls.append(("cpu", seed))
+
+        @staticmethod
+        def use_deterministic_algorithms(enabled):
+            calls.append(("deterministic", enabled))
+
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    configure_determinism(FakeTorch(), seed=42)
+
+    assert calls == [("cpu", 42), ("cuda", 42), ("deterministic", True)]
 
 
 def test_micro_prf_hand_computed():
