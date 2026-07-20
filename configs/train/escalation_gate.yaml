@@ -1,0 +1,21 @@
+# Standalone escalation gate (kgat.train.escalation_gate): a small cross-encoder
+# regressor over (filer, chunk) predicting the EXTRACTOR'S per-chunk F1. Escalate
+# the lowest-scoring chunks.
+#
+# Why separate from the extractor rather than a route inside it (all measured
+# 2026-07-19): teaching ESCALATE into the extractor costs ~0.08 F1 of extraction
+# irrecoverably; a joint RL objective trades extraction against routing in both
+# directions and is hackable. A supervised gate has neither problem.
+#
+#   python -m kgat.data.gate_export --outcomes <train outcomes> --pairs <train split> --out data/gate
+#   python -m kgat.train.escalation_gate train=escalation_gate model=crossencoder-modernbert
+escalation_gate:
+  data_dir: data/gate
+  output_dir: outputs/gates/${model.name}
+  max_examples: null
+  max_dev: 3000
+  learning_rate: 3.0e-5
+  epochs: 2
+  batch_size: 16
+  grad_accum: 2
+  max_seq_len: 1024
