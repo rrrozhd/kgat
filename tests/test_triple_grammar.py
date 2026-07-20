@@ -139,6 +139,55 @@ def test_confidence_excludes_forced_steps():
     assert result.n_choices < len(result.ids)
 
 
+def test_agreement_none_without_extended_contract():
+    # A plain scores-only logits_fn never measures clipped mass.
+    grammar = make_grammar()
+    gold = encode_triples_target([("partner", "Bolt Inc")], grammar)
+    result = decode_triples(forcing_logits_fn(gold), grammar)
+    assert result.agreement_logprob is None
+    assert result.agreement is None
+    assert result.min_agreement is None
+
+
+def test_agreement_measures_clipped_mass():
+    grammar = make_grammar()
+    gold = encode_triples_target([], grammar)  # `` NONE``<eos>
+    base = forcing_logits_fn(gold)
+
+    def logits_fn(generated, allowed):
+        vals = base(generated, allowed)
+        # Full-vocab mass = allowed mass + as much again outside the grammar:
+        # every step retains exactly half the unconstrained distribution.
+        allowed_lse = math.log(sum(math.exp(v) for v in vals))
+        return vals, allowed_lse + math.log(2.0)
+
+    result = decode_triples(logits_fn, grammar)
+    assert result.triples == ()
+    # Per-step agreement is exactly 1/2, so the geometric mean and the worst
+    # step both land on 0.5 — while the masked confidence stays blind to it.
+    assert result.agreement is not None
+    assert math.isclose(result.agreement, 0.5)
+    assert math.isclose(result.min_agreement, 0.5)
+    assert math.isclose(result.agreement_logprob, len(result.ids) * -math.log(2.0))
+
+
+def test_agreement_clamped_against_float_noise():
+    grammar = make_grammar()
+    gold = encode_triples_target([], grammar)
+    base = forcing_logits_fn(gold)
+
+    def logits_fn(generated, allowed):
+        vals = base(generated, allowed)
+        # Report a full-row logsumexp slightly BELOW the allowed mass (float
+        # noise in a real backend); agreement must clamp to <= 1.
+        allowed_lse = math.log(sum(math.exp(v) for v in vals))
+        return vals, allowed_lse - 1e-9
+
+    result = decode_triples(logits_fn, grammar)
+    assert result.agreement == 1.0
+    assert result.min_agreement == 1.0
+
+
 def test_max_triples_cap():
     grammar = make_grammar(max_triples=2)
     with pytest.raises(ValueError):

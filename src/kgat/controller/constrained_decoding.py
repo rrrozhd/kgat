@@ -130,6 +130,12 @@ def _logsoftmax(vals: Sequence[float]) -> list[float]:
     return [v - log_z for v in vals]
 
 
+def _logsumexp(vals: Sequence[float]) -> float:
+    """Log-sum-exp of a small score vector."""
+    m = max(vals)
+    return m + math.log(sum(math.exp(v - m) for v in vals))
+
+
 def _choose(
     vals: Sequence[float], temperature: float, rng: random.Random | None
 ) -> tuple[int, float]:
@@ -372,6 +378,12 @@ class TripleDecodeResult:
     logprob: float  # sum of temp-1 mask-renormalized step logprobs
     n_choices: int  # steps with >1 allowed token (forced steps excluded)
     sentinel: str | None = None  # which extra terminal was emitted (None for NONE/triples)
+    # Grammar agreement: per-step log of the UNCONSTRAINED probability mass the
+    # trie retained (logsumexp(allowed) - logsumexp(full vocab), <= 0). Only
+    # populated when logits_fn uses the extended (scores, full_logsumexp)
+    # contract; None means the decode never measured clipped mass.
+    agreement_logprob: float | None = None  # sum over all steps (incl. forced)
+    min_agreement_logprob: float | None = None  # worst single step
 
     @property
     def confidence(self) -> float:
@@ -383,6 +395,30 @@ class TripleDecodeResult:
         if self.n_choices == 0:
             return 1.0
         return math.exp(self.logprob / self.n_choices)
+
+    @property
+    def agreement(self) -> float | None:
+        """Geometric-mean per-step fraction of unconstrained mass inside the grammar.
+
+        The masked ``confidence`` is renormalized over allowed tokens only, so it
+        cannot see mass the trie clipped — a NONE decode scores ~1.0 even when the
+        model wanted an out-of-grammar continuation. ``agreement`` is that missing
+        factor: per step, ``P(allowed set)`` under the FULL softmax. Forced steps
+        are included (they are exactly where clipped mass hides — their masked
+        logprob is 0 by construction).
+        """
+        if self.agreement_logprob is None:
+            return None
+        if not self.ids:
+            return 1.0
+        return math.exp(self.agreement_logprob / len(self.ids))
+
+    @property
+    def min_agreement(self) -> float | None:
+        """Worst single-step allowed-mass fraction (one desperate step ruins trust)."""
+        if self.min_agreement_logprob is None:
+            return None
+        return math.exp(self.min_agreement_logprob)
 
 
 def decode_triples(
@@ -396,19 +432,36 @@ def decode_triples(
 
     ``logits_fn`` has the same contract as :func:`constrained_decode` — it receives
     ALL ids generated so far (across segments) plus the allowed continuations, and
-    returns scores for exactly those continuations.
+    returns scores for exactly those continuations. It MAY instead return a pair
+    ``(scores, full_logsumexp)`` where the second element is the log-sum-exp of the
+    step's FULL-vocabulary logits; the decode then also records grammar agreement
+    (the unconstrained mass the trie retained — see
+    :attr:`TripleDecodeResult.agreement`). A GPU backend gets this almost free:
+    the full row is already materialized, one extra reduction on-device.
     """
     generated: list[int] = []
     total_logprob = 0.0
     n_choices = 0
+    agree_sum = 0.0
+    agree_min = 0.0
+    agree_seen = False
 
     def run_segment(segment: _Segment) -> object:
-        nonlocal total_logprob, n_choices
+        nonlocal total_logprob, n_choices, agree_sum, agree_min, agree_seen
         node = segment.trie
         path: list[int] = []
         while not node.is_leaf:
             allowed = node.allowed()
-            vals = list(logits_fn(tuple(generated), allowed))
+            out = logits_fn(tuple(generated), allowed)
+            if isinstance(out, tuple):
+                vals, full_lse = list(out[0]), float(out[1])
+                # min(0) clamps float noise: allowed mass can't exceed total mass.
+                step_agree = min(0.0, _logsumexp(vals) - full_lse)
+                agree_sum += step_agree
+                agree_min = min(agree_min, step_agree)
+                agree_seen = True
+            else:
+                vals = list(out)
             idx, lp = _choose(vals, temperature, rng)
             if len(allowed) > 1:
                 n_choices += 1
@@ -441,6 +494,8 @@ def decode_triples(
         logprob=total_logprob,
         n_choices=n_choices,
         sentinel=sentinel,
+        agreement_logprob=agree_sum if agree_seen else None,
+        min_agreement_logprob=agree_min if agree_seen else None,
     )
 
 

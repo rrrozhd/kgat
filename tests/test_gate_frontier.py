@@ -41,6 +41,24 @@ def test_evaluate_gate_returns_matched_reference_orderings():
     assert out["oracle"][0]["f1"] >= max(out[k][0]["f1"] for k in ("gate", "confidence", "random"))
 
 
+def test_agreement_orderings_appear_when_logged():
+    r = rows()
+    # Old outcomes (no agreement column) -> no agreement curves.
+    assert "agreement" not in evaluate_gate(r, [0.5] * 4, fractions=[0.25])
+    # The fumbled chunks decoded confidently but wanted out-of-grammar mass:
+    # agreement ranks them first even though confidence ranks them LAST.
+    for row, a in zip(r, [0.95, 0.9, 0.2, 0.1], strict=True):
+        row["agreement"] = a
+    for row in r:
+        row["confidence"] = 1.0 - row["confidence"]  # invert: failures now most confident
+    out = evaluate_gate(r, [0.5] * 4, fractions=[0.5])
+    assert {"agreement", "conf_x_agree"} <= set(out)
+    assert out["agreement"][0]["f1"] > out["confidence"][0]["f1"]
+    # Rows missing the column mid-file degrade to full agreement, not a crash.
+    r[0]["agreement"] = None
+    assert "agreement" in evaluate_gate(r, [0.5] * 4, fractions=[0.5])
+
+
 def test_score_length_mismatch_is_an_error():
     import pytest
 

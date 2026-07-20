@@ -1,8 +1,12 @@
 """Cascade frontier for the backfill extractor (DESIGN-BACKFILL.md step 3).
 
 On held-out filings the small constrained extractor reads every chunk; a chunk
-escalates to the big teacher pipeline iff the extractor's decode confidence
-(``exp(mean logprob)``, from ``TripleDecodeResult``) falls below a threshold tau.
+escalates to the big teacher pipeline iff its escalation signal falls below a
+threshold tau. The baseline signal is the decode confidence (``exp(mean
+logprob)``, from ``TripleDecodeResult``); the ``SIGNALS`` registry adds
+grammar-agreement variants that fold in the unconstrained mass the trie clipped
+(the masked confidence is blind to it — see ``TripleDecodeResult.agreement``),
+and ``routing_auroc`` scores each signal as an error detector independent of tau.
 Sweeping tau traces the write-path cost/quality frontier: quality vs the teacher's
 edges against the fraction of chunks escalated (~ API $ per filing). Escalated
 chunks score as teacher output by construction (the teacher IS the label source),
@@ -46,12 +50,38 @@ class ExtractionOutcome:
     match them are removed before scoring (they cannot be true positives — not
     gold — but counting them as FALSE positives would punish the model for
     agreeing with a low-confidence teacher).
+
+    ``agreement`` / ``min_agreement`` are the grammar-agreement signals from the
+    decode (``TripleDecodeResult.agreement``): the unconstrained probability mass
+    the trie retained, mean and worst-step. ``None`` on decodes that predate the
+    extended logits contract.
     """
 
     gold: tuple[Triple, ...]
     pred: tuple[Triple, ...]
     confidence: float
     uncertain: tuple[Triple, ...] = ()
+    agreement: float | None = None
+    min_agreement: float | None = None
+
+
+def _effective_pred(o: ExtractionOutcome) -> set[Triple]:
+    """The prediction as scored: sub-floor teacher matches masked out."""
+    return set(o.pred) - set(o.uncertain)
+
+
+# Escalation signals: ExtractionOutcome -> score in [0, 1]; a chunk escalates iff
+# its score falls below tau. ``confidence`` is the masked-logprob baseline; the
+# agreement variants fold in the mass the grammar clipped (unmeasured decodes
+# count as full agreement, so old outcome logs degrade to the baseline).
+SIGNALS: dict[str, Any] = {
+    "confidence": lambda o: o.confidence,
+    "agreement": lambda o: 1.0 if o.agreement is None else o.agreement,
+    "min_agreement": lambda o: 1.0 if o.min_agreement is None else o.min_agreement,
+    "conf_x_agree": lambda o: o.confidence * (1.0 if o.agreement is None else o.agreement),
+    "conf_x_min_agree": lambda o: o.confidence
+    * (1.0 if o.min_agreement is None else o.min_agreement),
+}
 
 
 def micro_prf(items: list[tuple[set[Triple], set[Triple]]]) -> dict[str, float]:
@@ -79,20 +109,27 @@ def micro_prf(items: list[tuple[set[Triple], set[Triple]]]) -> dict[str, float]:
     }
 
 
-def cascade_rows(outcomes: list[ExtractionOutcome], taus: list[float]) -> list[dict]:
+def cascade_rows(
+    outcomes: list[ExtractionOutcome],
+    taus: list[float],
+    *,
+    signal: Any = None,
+) -> list[dict]:
     """Sweep the escalation threshold; one metrics row per tau.
 
-    A chunk escalates iff ``confidence < tau``; its prediction is then the
-    teacher's (gold). ``escalation_rate`` is the cost axis.
+    A chunk escalates iff ``signal(outcome) < tau`` (default signal: the decode
+    ``confidence``); its prediction is then the teacher's (gold).
+    ``escalation_rate`` is the cost axis.
     """
+    score = signal or SIGNALS["confidence"]
     rows: list[dict] = []
     for tau in taus:
         items: list[tuple[set[Triple], set[Triple]]] = []
         escalated = 0
         for o in outcomes:
-            escalate = o.confidence < tau
+            escalate = score(o) < tau
             escalated += int(escalate)
-            pred = set(o.gold) if escalate else set(o.pred) - set(o.uncertain)
+            pred = set(o.gold) if escalate else _effective_pred(o)
             items.append((pred, set(o.gold)))
         metrics = micro_prf(items)
         rows.append(
@@ -103,6 +140,50 @@ def cascade_rows(outcomes: list[ExtractionOutcome], taus: list[float]) -> list[d
             }
         )
     return rows
+
+
+def quantile_taus(
+    outcomes: list[ExtractionOutcome], signal: Any, *, n: int = 41
+) -> list[float]:
+    """Thresholds that sweep the signal's own value range.
+
+    Grammar agreement clusters near 1.0, so the fixed 0..1.05 grid collapses to
+    a handful of distinct escalation sets. Midpoints between consecutive distinct
+    observed values (subsampled to ~``n``) trace the full frontier of any signal;
+    endpoints 0.0 (escalate nothing) and max+eps (escalate everything) included.
+    """
+    values = sorted({signal(o) for o in outcomes})
+    if not values:
+        return [0.0]
+    mids = [(a + b) / 2 for a, b in zip(values, values[1:], strict=False)]
+    if len(mids) > n - 2:
+        step = len(mids) / (n - 2)
+        mids = [mids[int(i * step)] for i in range(n - 2)]
+    return [0.0, *mids, values[-1] + 1e-9]
+
+
+def routing_auroc(outcomes: list[ExtractionOutcome], signal: Any = None) -> float | None:
+    """AUROC of ``signal`` as a detector of small-model error — escalation accuracy.
+
+    Error = the scored prediction differs from gold (the chunk SHOULD escalate).
+    AUROC = P(signal(error chunk) < signal(correct chunk)), ties at 0.5 — the
+    threshold-free routing-quality metric that makes signal improvements
+    attributable independently of any tau choice. ``None`` when the split is
+    degenerate (no errors, or nothing but errors).
+    """
+    score = signal or SIGNALS["confidence"]
+    errors = [score(o) for o in outcomes if _effective_pred(o) != set(o.gold)]
+    correct = [score(o) for o in outcomes if _effective_pred(o) == set(o.gold)]
+    if not errors or not correct:
+        return None
+    wins = 0.0
+    for e in errors:
+        for c in correct:
+            if e < c:
+                wins += 1.0
+            elif e == c:
+                wins += 0.5
+    return wins / (len(errors) * len(correct))
 
 
 def cascade_rows_2d(
@@ -165,7 +246,7 @@ def write_summaries(rows: list[dict], out_dir: str | Path, *, n_questions: int) 
     paths: list[Path] = []
     for row in rows:
         summary = {
-            "run_label": f"tau={row['tau']:.2f}",
+            "run_label": f"tau={row['tau']:.4f}",
             "dataset": "backfill",
             "tau": row["tau"],
             "n_questions": n_questions,
@@ -180,7 +261,7 @@ def write_summaries(rows: list[dict], out_dir: str | Path, *, n_questions: int) 
                 "llm_calls": row["escalation_rate"],  # 1 big-LLM call per escalated chunk
             },
         }
-        path = out_dir / f"tau_{row['tau']:.2f}.summary.json"
+        path = out_dir / f"tau_{row['tau']:.4f}.summary.json"
         path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         paths.append(path)
     return paths
@@ -246,9 +327,13 @@ def decode_pairs(
             with torch.no_grad():
                 row = forward_last_logits(model, input_ids, keep=1)[0, -1]
             # Structured-decoding contract: gather ONLY the allowed continuations
-            # on-device (see DecoderPolicyController.logits_fn).
+            # on-device (see DecoderPolicyController.logits_fn). The full-row
+            # logsumexp rides along (one on-device reduction) so the decode can
+            # record grammar agreement — the mass the trie clipped.
             idx = torch.tensor(allowed, dtype=torch.long, device=row.device)
-            return row.index_select(0, idx).float().cpu().tolist()
+            vals = row.index_select(0, idx).float().cpu().tolist()
+            full_lse = torch.logsumexp(row.float(), dim=0).item()
+            return vals, full_lse
 
         result = decode_triples(logits_fn, g)
         outcomes.append(
@@ -257,6 +342,8 @@ def decode_pairs(
                 pred=norm_triples(result.triples),
                 confidence=result.confidence,
                 uncertain=norm_triples(pair.uncertain),
+                agreement=result.agreement,
+                min_agreement=result.min_agreement,
             )
         )
         if (i + 1) % 25 == 0:
@@ -314,6 +401,12 @@ def main() -> None:
     parser.add_argument("--min-recall", type=float, default=0.8, help="success-gate recall floor")
     parser.add_argument(
         "--taus", default=None, help="comma-separated thresholds (default 0.00..1.05 step 0.05)"
+    )
+    parser.add_argument(
+        "--signals",
+        default="confidence",
+        help=f"comma-separated escalation signals to sweep, or 'all' ({sorted(SIGNALS)}); "
+        "the first one is the headline and keeps the legacy root output layout",
     )
     args = parser.parse_args()
 
@@ -395,36 +488,71 @@ def main() -> None:
                         "gold": [list(t) for t in o.gold],
                         "pred": [list(t) for t in o.pred],
                         "confidence": o.confidence,
+                        "agreement": o.agreement,
+                        "min_agreement": o.min_agreement,
                     }
                 )
                 + "\n"
             )
 
-    if args.taus:
-        taus = [float(t) for t in args.taus.split(",")]
-    else:
-        taus = [round(i * 0.05, 2) for i in range(22)]  # 0.00 .. 1.05
-    rows = cascade_rows(outcomes, taus)
-    write_summaries(rows, out_dir, n_questions=len(outcomes))
-
     from kgat.eval.frontier import build_frontier
 
-    df, csv_path, png_path = build_frontier(
-        out_dir, out_dir, accuracy_metric="recall", cost_axis="escalation_rate"
-    )
-    print(df.to_string(index=False))
-    print(f"wrote {csv_path}\nwrote {png_path}")
+    if args.signals == "all":
+        signals = ["confidence", *[s for s in SIGNALS if s != "confidence"]]
+    else:
+        signals = [s.strip() for s in args.signals.split(",") if s.strip()]
+    unknown = [s for s in signals if s not in SIGNALS]
+    if unknown:
+        parser.error(f"unknown signals {unknown}; choose from {sorted(SIGNALS)}")
 
-    best = headline(rows, min_recall=args.min_recall)
+    report: list[tuple[str, float | None, dict | None]] = []
+    first_rows: list[dict] = []
+    for name in signals:
+        signal = SIGNALS[name]
+        if args.taus:
+            taus = [float(t) for t in args.taus.split(",")]
+        elif name == "confidence":
+            taus = [round(i * 0.05, 2) for i in range(22)]  # 0.00 .. 1.05 (legacy grid)
+        else:
+            taus = quantile_taus(outcomes, signal)
+        rows = cascade_rows(outcomes, taus, signal=signal)
+        if name == signals[0]:
+            first_rows = rows
+        # `confidence` keeps the legacy root layout; other signals get subdirs.
+        signal_dir = out_dir if name == "confidence" else out_dir / name
+        write_summaries(rows, signal_dir, n_questions=len(outcomes))
+        df, csv_path, png_path = build_frontier(
+            signal_dir, signal_dir, accuracy_metric="recall", cost_axis="escalation_rate"
+        )
+        if name == signals[0]:
+            print(df.to_string(index=False))
+        print(f"wrote {csv_path}\nwrote {png_path}")
+        best = headline(rows, min_recall=args.min_recall)
+        report.append((name, routing_auroc(outcomes, signal), best))
+
+    print(f"\nsignal comparison (recall floor {args.min_recall:.2f}):")
+    for name, auroc, best in report:
+        auroc_s = f"{auroc:.3f}" if auroc is not None else "  n/a"
+        if best is None:
+            print(f"  {name:<18} auroc {auroc_s}  GATE MISSED")
+        else:
+            print(
+                f"  {name:<18} auroc {auroc_s}  "
+                f"{best['recall']:.1%} recall (F1 {best['f1']:.3f}, "
+                f"exact {best['exact']:.3f}) at {best['escalation_rate']:.1%} "
+                f"escalation (tau={best['tau']:.4f})"
+            )
+
+    best = report[0][2]
     if best is None:
-        max_r = max((r["recall"] for r in rows), default=0.0)
+        max_r = max((r["recall"] for r in first_rows), default=0.0)
         print(
             f"GATE MISSED: no tau reaches recall >= {args.min_recall:.2f} "
             f"(best {max_r:.3f} at full small-model coverage sweep)"
         )
     else:
         print(
-            f"HEADLINE: {best['recall']:.1%} of teacher recall "
+            f"HEADLINE ({report[0][0]}): {best['recall']:.1%} of teacher recall "
             f"(F1 {best['f1']:.3f}, exact {best['exact']:.3f}) at "
             f"{best['escalation_rate']:.1%} escalation (tau={best['tau']:.2f})"
         )
@@ -436,10 +564,13 @@ if __name__ == "__main__":
 
 __all__ = [
     "ExtractionOutcome",
+    "SIGNALS",
     "micro_prf",
     "cascade_rows",
     "cascade_rows_2d",
     "pareto_front",
+    "quantile_taus",
+    "routing_auroc",
     "write_summaries",
     "headline",
     "decode_pairs",
