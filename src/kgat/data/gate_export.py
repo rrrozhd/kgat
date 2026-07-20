@@ -35,7 +35,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-__all__ = ["chunk_f1", "gate_examples", "write_gate_splits", "main"]
+__all__ = ["chunk_f1", "hardness_target", "gate_examples", "write_gate_splits", "main"]
 
 
 def chunk_f1(gold: set, pred: set) -> float:
@@ -59,6 +59,24 @@ def chunk_f1(gold: set, pred: set) -> float:
     precision = tp / len(pred)
     recall = tp / len(gold)
     return 2 * precision * recall / (precision + recall)
+
+
+def hardness_target(pair: Any, *, min_edges: int = 4) -> float:
+    """1.0 = easy (keep), 0.0 = hard (escalate). The SFT warmup's difficulty proxy.
+
+    Measured 2026-07-20: a gate trained on the extractor's REALIZED per-chunk F1
+    ranks poorly (dev Spearman 0.110) because that target is 90% at the extremes —
+    18% at 0.0, 72% at 1.0 — so pointwise regression collapses to the mean. The
+    structural proxy is a cleaner, lower-variance signal about the chunk itself,
+    and it is what ``P(ESCALATE)`` was trained on, which outranked everything else.
+
+    Convention: the gate always predicts QUALITY (higher = the extractor will cope
+    = do not escalate), so ``eval.gate_frontier`` can escalate lowest-first in
+    every mode without a sign flag.
+    """
+    from kgat.train.routing_warmup import is_hard_chunk
+
+    return 0.0 if is_hard_chunk(pair, min_edges=min_edges) else 1.0
 
 
 def gate_examples(
@@ -149,6 +167,13 @@ def main() -> None:
     p.add_argument("--out", default="data/gate")
     p.add_argument("--loose-match", action="store_true")
     p.add_argument("--dev-frac", type=float, default=0.1)
+    p.add_argument(
+        "--target", default="hardness", choices=["hardness", "f1"],
+        help="hardness = structural proxy (default; needs no decode pass); "
+             "f1 = the extractor's realized per-chunk F1 (ranks poorly, see "
+             "results/escalation-gate-2026-07-20)",
+    )
+    p.add_argument("--hard-min-edges", type=int, default=4)
     args = p.parse_args()
 
     from kgat.data.backfill_export import read_pairs_jsonl
@@ -164,6 +189,11 @@ def main() -> None:
     examples = gate_examples(
         outcomes, [p_.text for p_ in pairs], [p_.filer for p_ in pairs], normalize=normalize
     )
+    if args.target == "hardness":
+        # Overwrite the target; the decode-derived fields (confidence) stay as
+        # FEATURES, which is what the f1-target run failed to actually use.
+        for ex, pr in zip(examples, pairs, strict=True):
+            ex["target"] = hardness_target(pr, min_edges=args.hard_min_edges)
     counts = write_gate_splits(examples, args.out, dev_frac=args.dev_frac)
     targets = [e["target"] for e in examples]
     perfect = sum(1 for t in targets if t >= 0.999)

@@ -123,7 +123,10 @@ def main() -> None:
 
     score_many = load_gate_scorer(args.gate, device=args.device)
     print(f"gate eval: scoring {len(pairs)} chunks")
-    scores = score_many([(p_.filer, p_.text) for p_ in pairs])
+    # confidence must match what the gate saw in training (render_gate_input)
+    scores = score_many(
+        [(p_.filer, p_.text, r.get("confidence")) for p_, r in zip(pairs, rows, strict=True)]
+    )
 
     curves = evaluate_gate(rows, scores)
     out = Path(args.out)
