@@ -1,0 +1,318 @@
+cascade eval: 2193 test pairs, 8993 targets
+  prompt tokens: mean=588 max=845 truncated=0/2193 (mark_filer=True)
+
+===== SHARD 0 =====
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]
+Loading weights:   4%|▍         | 13/311 [00:00<00:04, 64.85it/s]
+Loading weights:  10%|█         | 32/311 [00:00<00:02, 114.74it/s]
+Loading weights:  23%|██▎       | 70/311 [00:00<00:01, 211.85it/s]
+Loading weights:  32%|███▏      | 98/311 [00:00<00:00, 233.05it/s]
+Loading weights:  40%|████      | 125/311 [00:00<00:00, 243.74it/s]
+Loading weights:  51%|█████     | 159/311 [00:00<00:00, 272.09it/s]
+Loading weights:  60%|██████    | 188/311 [00:00<00:00, 225.24it/s]
+Loading weights:  70%|███████   | 219/311 [00:00<00:00, 246.91it/s]
+Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 258.40it/s]
+Loading weights:  89%|████████▉ | 278/311 [00:01<00:00, 269.20it/s]
+Loading weights: 100%|██████████| 311/311 [00:01<00:00, 255.80it/s]
+cascade eval: 548 test pairs, 8993 targets
+  decoded 25/548
+  decoded 50/548
+  decoded 75/548
+  decoded 100/548
+  decoded 125/548
+  decoded 150/548
+  decoded 175/548
+  decoded 200/548
+  decoded 225/548
+  decoded 250/548
+  decoded 275/548
+  decoded 300/548
+  decoded 325/548
+  decoded 350/548
+  decoded 375/548
+  decoded 400/548
+  decoded 425/548
+  decoded 450/548
+  decoded 475/548
+  decoded 500/548
+  decoded 525/548
+  prompt tokens: mean=598 max=818 truncated=0/548 (mark_filer=True)
+     label  lam  accuracy  mean_cost accuracy_metric       cost_axis  n_questions
+tau=0.0000 None  0.648033   0.000000          recall escalation_rate          548
+tau=0.0500 None  0.648033   0.000000          recall escalation_rate          548
+tau=0.1000 None  0.648033   0.000000          recall escalation_rate          548
+tau=0.1500 None  0.648033   0.000000          recall escalation_rate          548
+tau=0.2000 None  0.648033   0.000000          recall escalation_rate          548
+tau=0.2500 None  0.649068   0.001825          recall escalation_rate          548
+tau=0.3000 None  0.649068   0.001825          recall escalation_rate          548
+tau=0.3500 None  0.649068   0.001825          recall escalation_rate          548
+tau=0.4000 None  0.655280   0.007299          recall escalation_rate          548
+tau=0.4500 None  0.657350   0.010949          recall escalation_rate          548
+tau=0.5000 None  0.662526   0.020073          recall escalation_rate          548
+tau=0.5500 None  0.664596   0.023723          recall escalation_rate          548
+tau=0.6000 None  0.681159   0.041971          recall escalation_rate          548
+tau=0.6500 None  0.691511   0.056569          recall escalation_rate          548
+tau=0.7000 None  0.716356   0.087591          recall escalation_rate          548
+tau=0.7500 None  0.742236   0.140511          recall escalation_rate          548
+tau=0.8000 None  0.803313   0.253650          recall escalation_rate          548
+tau=0.8500 None  0.875776   0.388686          recall escalation_rate          548
+tau=0.9000 None  0.946170   0.558394          recall escalation_rate          548
+tau=0.9500 None  0.984472   0.742701          recall escalation_rate          548
+tau=1.0000 None  1.000000   1.000000          recall escalation_rate          548
+tau=1.0500 None  1.000000   1.000000          recall escalation_rate          548
+wrote outputs/backfill/agreement-max28-shard-0/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-0/frontier.png
+wrote outputs/backfill/agreement-max28-shard-0/agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-0/agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-0/min_agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-0/min_agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-0/conf_x_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-0/conf_x_agree/frontier.png
+wrote outputs/backfill/agreement-max28-shard-0/conf_x_min_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-0/conf_x_min_agree/frontier.png
+
+signal comparison (recall floor 0.80):
+  confidence         auroc 0.838  80.3% recall (F1 0.822, exact 0.692) at 25.4% escalation (tau=0.8000)
+  agreement          auroc 0.752  80.6% recall (F1 0.851, exact 0.703) at 30.5% escalation (tau=0.9975)
+  min_agreement      auroc 0.719  80.4% recall (F1 0.848, exact 0.690) at 27.9% escalation (tau=0.9807)
+  conf_x_agree       auroc 0.841  81.0% recall (F1 0.837, exact 0.706) at 25.4% escalation (tau=0.7741)
+  conf_x_min_agree   auroc 0.830  80.3% recall (F1 0.839, exact 0.704) at 25.4% escalation (tau=0.7344)
+HEADLINE (confidence): 80.3% of teacher recall (F1 0.822, exact 0.692) at 25.4% escalation (tau=0.80)
+
+
+===== SHARD 1 =====
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]
+Loading weights:  14%|█▎        | 42/311 [00:00<00:01, 243.06it/s]
+Loading weights:  22%|██▏       | 68/311 [00:00<00:00, 245.29it/s]
+Loading weights:  33%|███▎      | 103/311 [00:00<00:00, 285.55it/s]
+Loading weights:  43%|████▎     | 133/311 [00:00<00:00, 286.59it/s]
+Loading weights:  53%|█████▎    | 166/311 [00:00<00:00, 299.95it/s]
+Loading weights:  64%|██████▍   | 199/311 [00:00<00:00, 308.62it/s]
+Loading weights:  74%|███████▍  | 231/311 [00:00<00:00, 308.65it/s]
+Loading weights:  85%|████████▍ | 263/311 [00:00<00:00, 308.94it/s]
+Loading weights: 100%|██████████| 311/311 [00:00<00:00, 314.30it/s]
+cascade eval: 548 test pairs, 8993 targets
+  decoded 25/548
+  decoded 50/548
+  decoded 75/548
+  decoded 100/548
+  decoded 125/548
+  decoded 150/548
+  decoded 175/548
+  decoded 200/548
+  decoded 225/548
+  decoded 250/548
+  decoded 275/548
+  decoded 300/548
+  decoded 325/548
+  decoded 350/548
+  decoded 375/548
+  decoded 400/548
+  decoded 425/548
+  decoded 450/548
+  decoded 475/548
+  decoded 500/548
+  decoded 525/548
+  prompt tokens: mean=596 max=816 truncated=0/548 (mark_filer=True)
+     label  lam  accuracy  mean_cost accuracy_metric       cost_axis  n_questions
+tau=0.0000 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.0500 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.1000 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.1500 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.2000 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.2500 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.3000 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.3500 None  0.545603   0.000000          recall escalation_rate          548
+tau=0.4000 None  0.550489   0.005474          recall escalation_rate          548
+tau=0.4500 None  0.561889   0.016423          recall escalation_rate          548
+tau=0.5000 None  0.573290   0.031022          recall escalation_rate          548
+tau=0.5500 None  0.592834   0.051095          recall escalation_rate          548
+tau=0.6000 None  0.609121   0.072993          recall escalation_rate          548
+tau=0.6500 None  0.648208   0.107664          recall escalation_rate          548
+tau=0.7000 None  0.675896   0.153285          recall escalation_rate          548
+tau=0.7500 None  0.723127   0.213504          recall escalation_rate          548
+tau=0.8000 None  0.783388   0.279197          recall escalation_rate          548
+tau=0.8500 None  0.866450   0.390511          recall escalation_rate          548
+tau=0.9000 None  0.928339   0.529197          recall escalation_rate          548
+tau=0.9500 None  0.983713   0.693431          recall escalation_rate          548
+tau=1.0000 None  1.000000   1.000000          recall escalation_rate          548
+tau=1.0500 None  1.000000   1.000000          recall escalation_rate          548
+wrote outputs/backfill/agreement-max28-shard-1/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-1/frontier.png
+wrote outputs/backfill/agreement-max28-shard-1/agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-1/agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-1/min_agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-1/min_agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-1/conf_x_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-1/conf_x_agree/frontier.png
+wrote outputs/backfill/agreement-max28-shard-1/conf_x_min_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-1/conf_x_min_agree/frontier.png
+
+signal comparison (recall floor 0.80):
+  confidence         auroc 0.838  86.6% recall (F1 0.881, exact 0.847) at 39.1% escalation (tau=0.8500)
+  agreement          auroc 0.794  80.8% recall (F1 0.859, exact 0.812) at 39.1% escalation (tau=0.9986)
+  min_agreement      auroc 0.764  80.6% recall (F1 0.869, exact 0.808) at 42.0% escalation (tau=0.9963)
+  conf_x_agree       auroc 0.855  81.3% recall (F1 0.841, exact 0.797) at 32.1% escalation (tau=0.7927)
+  conf_x_min_agree   auroc 0.850  81.1% recall (F1 0.842, exact 0.794) at 32.1% escalation (tau=0.7542)
+HEADLINE (confidence): 86.6% of teacher recall (F1 0.881, exact 0.847) at 39.1% escalation (tau=0.85)
+
+
+===== SHARD 2 =====
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]
+Loading weights:  17%|█▋        | 53/311 [00:00<00:00, 515.99it/s]
+Loading weights:  34%|███▍      | 105/311 [00:00<00:00, 339.36it/s]
+Loading weights:  46%|████▌     | 143/311 [00:00<00:00, 344.93it/s]
+Loading weights:  58%|█████▊    | 180/311 [00:00<00:00, 342.07it/s]
+Loading weights:  69%|██████▉   | 216/311 [00:00<00:00, 337.53it/s]
+Loading weights:  81%|████████  | 251/311 [00:00<00:00, 280.52it/s]
+Loading weights:  91%|█████████ | 282/311 [00:00<00:00, 287.42it/s]
+Loading weights: 100%|██████████| 311/311 [00:00<00:00, 340.91it/s]
+cascade eval: 548 test pairs, 8993 targets
+  decoded 25/548
+  decoded 50/548
+  decoded 75/548
+  decoded 100/548
+  decoded 125/548
+  decoded 150/548
+  decoded 175/548
+  decoded 200/548
+  decoded 225/548
+  decoded 250/548
+  decoded 275/548
+  decoded 300/548
+  decoded 325/548
+  decoded 350/548
+  decoded 375/548
+  decoded 400/548
+  decoded 425/548
+  decoded 450/548
+  decoded 475/548
+  decoded 500/548
+  decoded 525/548
+  prompt tokens: mean=583 max=837 truncated=0/548 (mark_filer=True)
+     label  lam  accuracy  mean_cost accuracy_metric       cost_axis  n_questions
+tau=0.0000 None       1.0   0.000000          recall escalation_rate          548
+tau=0.0500 None       1.0   0.000000          recall escalation_rate          548
+tau=0.1000 None       1.0   0.000000          recall escalation_rate          548
+tau=0.1500 None       1.0   0.000000          recall escalation_rate          548
+tau=0.2000 None       1.0   0.000000          recall escalation_rate          548
+tau=0.2500 None       1.0   0.000000          recall escalation_rate          548
+tau=0.3000 None       1.0   0.000000          recall escalation_rate          548
+tau=0.3500 None       1.0   0.000000          recall escalation_rate          548
+tau=0.4000 None       1.0   0.005474          recall escalation_rate          548
+tau=0.4500 None       1.0   0.007299          recall escalation_rate          548
+tau=0.5000 None       1.0   0.012774          recall escalation_rate          548
+tau=0.5500 None       1.0   0.025547          recall escalation_rate          548
+tau=0.6000 None       1.0   0.034672          recall escalation_rate          548
+tau=0.6500 None       1.0   0.047445          recall escalation_rate          548
+tau=0.7000 None       1.0   0.067518          recall escalation_rate          548
+tau=0.7500 None       1.0   0.083942          recall escalation_rate          548
+tau=0.8000 None       1.0   0.109489          recall escalation_rate          548
+tau=0.8500 None       1.0   0.153285          recall escalation_rate          548
+tau=0.9000 None       1.0   0.211679          recall escalation_rate          548
+tau=0.9500 None       1.0   0.297445          recall escalation_rate          548
+tau=1.0000 None       1.0   1.000000          recall escalation_rate          548
+tau=1.0500 None       1.0   1.000000          recall escalation_rate          548
+wrote outputs/backfill/agreement-max28-shard-2/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-2/frontier.png
+wrote outputs/backfill/agreement-max28-shard-2/agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-2/agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-2/min_agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-2/min_agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-2/conf_x_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-2/conf_x_agree/frontier.png
+wrote outputs/backfill/agreement-max28-shard-2/conf_x_min_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-2/conf_x_min_agree/frontier.png
+
+signal comparison (recall floor 0.80):
+  confidence         auroc 0.837  100.0% recall (F1 0.000, exact 0.940) at 0.0% escalation (tau=0.0000)
+  agreement          auroc 0.948  100.0% recall (F1 0.000, exact 0.940) at 0.0% escalation (tau=0.0000)
+  min_agreement      auroc 0.976  100.0% recall (F1 0.000, exact 0.940) at 0.0% escalation (tau=0.0000)
+  conf_x_agree       auroc 0.884  100.0% recall (F1 0.000, exact 0.940) at 0.0% escalation (tau=0.0000)
+  conf_x_min_agree   auroc 0.905  100.0% recall (F1 0.000, exact 0.940) at 0.0% escalation (tau=0.0000)
+HEADLINE (confidence): 100.0% of teacher recall (F1 0.000, exact 0.940) at 0.0% escalation (tau=0.00)
+
+
+===== SHARD 3 =====
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]
+Loading weights:  13%|█▎        | 39/311 [00:00<00:00, 386.52it/s]
+Loading weights:  25%|██▌       | 78/311 [00:00<00:00, 375.36it/s]
+Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 275.52it/s]
+Loading weights:  47%|████▋     | 146/311 [00:00<00:00, 281.75it/s]
+Loading weights:  58%|█████▊    | 180/311 [00:00<00:00, 298.81it/s]
+Loading weights:  68%|██████▊   | 212/311 [00:00<00:00, 303.10it/s]
+Loading weights:  78%|███████▊  | 244/311 [00:00<00:00, 302.73it/s]
+Loading weights:  94%|█████████▍| 292/311 [00:00<00:00, 354.83it/s]
+Loading weights: 100%|██████████| 311/311 [00:00<00:00, 342.35it/s]
+cascade eval: 549 test pairs, 8993 targets
+  decoded 25/549
+  decoded 50/549
+  decoded 75/549
+  decoded 100/549
+  decoded 125/549
+  decoded 150/549
+  decoded 175/549
+  decoded 200/549
+  decoded 225/549
+  decoded 250/549
+  decoded 275/549
+  decoded 300/549
+  decoded 325/549
+  decoded 350/549
+  decoded 375/549
+  decoded 400/549
+  decoded 425/549
+  decoded 450/549
+  decoded 475/549
+  decoded 500/549
+  decoded 525/549
+  prompt tokens: mean=577 max=845 truncated=0/549 (mark_filer=True)
+     label  lam  accuracy  mean_cost accuracy_metric       cost_axis  n_questions
+tau=0.0000 None       1.0   0.000000          recall escalation_rate          549
+tau=0.0500 None       1.0   0.000000          recall escalation_rate          549
+tau=0.1000 None       1.0   0.000000          recall escalation_rate          549
+tau=0.1500 None       1.0   0.000000          recall escalation_rate          549
+tau=0.2000 None       1.0   0.000000          recall escalation_rate          549
+tau=0.2500 None       1.0   0.000000          recall escalation_rate          549
+tau=0.3000 None       1.0   0.000000          recall escalation_rate          549
+tau=0.3500 None       1.0   0.000000          recall escalation_rate          549
+tau=0.4000 None       1.0   0.000000          recall escalation_rate          549
+tau=0.4500 None       1.0   0.007286          recall escalation_rate          549
+tau=0.5000 None       1.0   0.014572          recall escalation_rate          549
+tau=0.5500 None       1.0   0.029144          recall escalation_rate          549
+tau=0.6000 None       1.0   0.043716          recall escalation_rate          549
+tau=0.6500 None       1.0   0.063752          recall escalation_rate          549
+tau=0.7000 None       1.0   0.078324          recall escalation_rate          549
+tau=0.7500 None       1.0   0.103825          recall escalation_rate          549
+tau=0.8000 None       1.0   0.142077          recall escalation_rate          549
+tau=0.8500 None       1.0   0.189435          recall escalation_rate          549
+tau=0.9000 None       1.0   0.227687          recall escalation_rate          549
+tau=0.9500 None       1.0   0.320583          recall escalation_rate          549
+tau=1.0000 None       1.0   1.000000          recall escalation_rate          549
+tau=1.0500 None       1.0   1.000000          recall escalation_rate          549
+wrote outputs/backfill/agreement-max28-shard-3/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-3/frontier.png
+wrote outputs/backfill/agreement-max28-shard-3/agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-3/agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-3/min_agreement/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-3/min_agreement/frontier.png
+wrote outputs/backfill/agreement-max28-shard-3/conf_x_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-3/conf_x_agree/frontier.png
+wrote outputs/backfill/agreement-max28-shard-3/conf_x_min_agree/frontier.csv
+wrote outputs/backfill/agreement-max28-shard-3/conf_x_min_agree/frontier.png
+
+signal comparison (recall floor 0.80):
+  confidence         auroc 0.860  100.0% recall (F1 0.000, exact 0.918) at 0.0% escalation (tau=0.0000)
+  agreement          auroc 0.952  100.0% recall (F1 0.000, exact 0.918) at 0.0% escalation (tau=0.0000)
+  min_agreement      auroc 0.980  100.0% recall (F1 0.000, exact 0.918) at 0.0% escalation (tau=0.0000)
+  conf_x_agree       auroc 0.923  100.0% recall (F1 0.000, exact 0.918) at 0.0% escalation (tau=0.0000)
+  conf_x_min_agree   auroc 0.931  100.0% recall (F1 0.000, exact 0.918) at 0.0% escalation (tau=0.0000)
+HEADLINE (confidence): 100.0% of teacher recall (F1 0.000, exact 0.918) at 0.0% escalation (tau=0.00)

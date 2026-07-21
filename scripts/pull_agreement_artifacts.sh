@@ -58,4 +58,4 @@ test -f "$DESTINATION/outcomes.jsonl"
 test -f "$DESTINATION/run.log"
 test -f "$DESTINATION/run_manifest.json"
 find "$DESTINATION" -type f \( -name '*frontier*.csv' -o -name 'tau_*.summary.json' \) \
-  | grep -q .
+  -print -quit | grep -q .

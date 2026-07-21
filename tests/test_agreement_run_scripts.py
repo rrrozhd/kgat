@@ -47,6 +47,7 @@ def test_pull_contract_is_narrow_and_hash_verified():
     assert "sha256sum" in text or "shasum -a 256" in text
     assert "manifest.sha256" in text
     assert "--protect-args" not in text
+    assert "-print -quit | grep -q ." in text
     assert "rm -" not in text
 
 

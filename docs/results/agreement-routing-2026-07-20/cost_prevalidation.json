@@ -1,0 +1,69 @@
+{
+  "verdict": "COST_REDUCTION_NO_GO",
+  "shadow_mode": "DISABLED",
+  "reason": "No agreement policy achieves the required 10% cost reduction at equal-or-better frozen baseline quality.",
+  "workload_chunks": 1160000,
+  "quality_comparator": {
+    "policy_id": "confidence-tau-0.85-markers-vocab-max28",
+    "evaluation_chunks": 2193,
+    "escalated_calls": 615,
+    "escalation_rate": 0.280437756497948,
+    "f1": 0.8785463818935288,
+    "recall": 0.8721518987341772,
+    "exact": 0.8969448244414044,
+    "input_tokens": 274795,
+    "output_tokens": 6991,
+    "total_tokens": 281786,
+    "projected_calls_at_1_16m": 325307.79753761966
+  },
+  "best_matched_quality_candidate": {
+    "signal": "conf_x_min_agree",
+    "escalated_calls": 612,
+    "escalation_rate": 0.27906976744186046,
+    "f1": 0.8871019620456739,
+    "recall": 0.8727848101265823,
+    "exact": 0.9010487916096671,
+    "input_tokens": 274754,
+    "output_tokens": 7500,
+    "total_tokens": 282254,
+    "projected_calls_at_1_16m": 323720.9302325581
+  },
+  "deltas": {
+    "calls": -3,
+    "call_reduction_fraction": 0.004878048780487805,
+    "projected_calls_reduced_at_1_16m": 1586.8673050615596,
+    "input_tokens": -41,
+    "output_tokens": 509,
+    "total_tokens": 468,
+    "total_token_change_fraction": 0.0016608348179114648
+  },
+  "gates": {
+    "minimum_cost_reduction_fraction": 0.10,
+    "point_estimate_pass": false,
+    "bootstrap_lower_bound_run": false,
+    "bootstrap_reason": "Point estimate fails decisively; a dated pricing profile and frozen 1.16M-stratum workload manifest do not exist yet.",
+    "quality_pass": true,
+    "shadow_enable_pass": false
+  },
+  "fixed_budget_signal_evidence": {
+    "budget": 0.20,
+    "confidence_f1": 0.8054759630690863,
+    "min_agreement_f1": 0.8540758134854076,
+    "confidence_recall": 0.8006329113924051,
+    "min_agreement_recall": 0.8056962025316455,
+    "interpretation": "Agreement improves routing quality at fixed cost, but not enough to meet the selected matched-quality cost gate."
+  },
+  "provenance": {
+    "validation_commit": "64c33eef0f06c6941c4f785fc75d7f1810deed93",
+    "model_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "torch": "2.6.0+cu124",
+    "cuda": "12.4",
+    "transformers": "5.14.1",
+    "outcomes_sha256": "73f0ca65f1d51e67dc50b2d58c62260d25ea65dffc4fa46a7e1d3c004bba61e4",
+    "run_manifest_sha256": "1aba9828cfd3bf7c1a7144358a94205743cc3c9c945b8eca590dffba4a2455c6",
+    "comparison_sha256": "121da1b91fe161e3830cb91501e4531878aa9484596134a4e765156500bbb4a1",
+    "confidence_baseline_sha256": "5cb20ae81a96c499342a1ed173f0088cb278ce49a57a4f9702975ddfec3157c9",
+    "test_sha256": "f3e856cf860ffa0186f3ff205127367c3d4ce964b74992fb595ef8e7d42b73fc"
+  }
+}

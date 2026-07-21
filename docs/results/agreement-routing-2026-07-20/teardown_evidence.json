@@ -1,0 +1,7 @@
+{
+  "pod_id": "n9ws1pwlyyfqcb",
+  "termination_requested": true,
+  "pod_absent_after_termination": true,
+  "verified_at_utc": "2026-07-21T00:04:55Z",
+  "billing_record_status": "pending_provider_aggregation"
+}
